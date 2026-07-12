@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ore &amp; Anvil — Crafty Mod Manager</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<div class="scaffold">
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">&gt;_</span>
+      <div class="brand-text">
+        <span class="brand-title">ore &amp; anvil</span>
+        <span class="brand-sub">mods, plugins &amp; datapacks for crafty controller</span>
+      </div>
+    </div>
+    <nav class="tabs" id="tabs">
+      <span class="tab-indicator" id="tab-indicator"></span>
+      <button class="tab active" data-tab="setup">Server Setup</button>
+      <button class="tab" data-tab="browse">Browse &amp; Install</button>
+      <button class="tab" data-tab="installed">Installed</button>
+      <button class="tab" data-tab="settings">Settings</button>
+    </nav>
+  </header>
+
+  <div class="preview-banner" id="preview-banner" style="display:none">
+    <span class="preview-dot"></span>
+    <span><strong>Preview mode</strong> — search is live, but installs, updates and removals are simulated. Nothing is written to or deleted from disk.</span>
+    <button id="btn-exit-preview" class="btn-ghost">Turn off</button>
+  </div>
+
+  <main class="content">
+
+    <!-- SERVER SETUP -->
+    <section class="panel active" id="panel-setup">
+      <div class="panel-head">
+        <h1>Point this at your server</h1>
+        <p>Pick the folder Crafty runs your server from — the one that contains <code>server.jar</code>, <code>mods/</code> or <code>plugins/</code>, and <code>world/</code>. Everything below is scoped to this one server.</p>
+      </div>
+
+      <div class="card demo-card">
+        <div class="demo-card-text">
+          <h2>Just want to try it first?</h2>
+          <p class="hint" style="margin:0">Skip picking a real folder. This loads a fake "Preview Server" on Minecraft 1.20.1 / Fabric so you can search and click Install without touching your disk.</p>
+        </div>
+        <button id="btn-load-demo" class="btn-secondary">Load demo server</button>
+      </div>
+
+      <div class="card-row">
+        <div class="card">
+          <h2>1. Locate the server folder</h2>
+          <div class="path-bar">
+            <button id="btn-up" class="btn-ghost" title="Up one level">&uarr;</button>
+            <input id="path-input" type="text" placeholder="/var/opt/minecraft/crafty/servers/&lt;server-id&gt;">
+            <button id="btn-go" class="btn-secondary">Go</button>
+          </div>
+          <div class="dir-list" id="dir-list"></div>
+          <button id="btn-select-server" class="btn-primary" disabled>Use this folder</button>
+        </div>
+
+        <div class="card">
+          <h2>2. Confirm version &amp; loader</h2>
+          <p class="hint" id="detect-hint">Select a folder to auto-detect.</p>
+          <label>Server name
+            <input id="server-name" type="text" placeholder="Survival SMP">
+          </label>
+          <label>Minecraft version
+            <input id="mc-version" type="text" placeholder="1.20.1">
+          </label>
+          <label>Loader / platform
+            <select id="loader-select">
+              <optgroup label="Vanilla">
+                <option value="vanilla">Vanilla (datapacks only)</option>
+              </optgroup>
+              <optgroup label="Mod loaders">
+                <option value="fabric">Fabric</option>
+                <option value="quilt">Quilt</option>
+                <option value="forge">Forge</option>
+                <option value="neoforge">NeoForge</option>
+              </optgroup>
+              <optgroup label="Plugin platforms">
+                <option value="paper">Paper</option>
+                <option value="purpur">Purpur</option>
+                <option value="spigot">Spigot</option>
+                <option value="bukkit">Bukkit</option>
+                <option value="folia">Folia</option>
+              </optgroup>
+            </select>
+          </label>
+          <label>World folder (for datapacks)
+            <input id="world-name" type="text" placeholder="world">
+          </label>
+          <button id="btn-save-config" class="btn-primary">Save server profile</button>
+          <p class="status-line" id="setup-status"></p>
+        </div>
+      </div>
+
+      <div class="card" id="saved-servers-card">
+        <h2>Saved servers</h2>
+        <p class="hint" style="margin-top:-6px">The server you last worked on is auto-selected next time you open the dashboard.</p>
+        <div class="server-chip-row" id="saved-servers"></div>
+      </div>
+    </section>
+
+    <!-- BROWSE & INSTALL -->
+    <section class="panel" id="panel-browse">
+      <div class="panel-head">
+        <h1>Browse &amp; install</h1>
+        <p>Results are filtered to <strong id="active-server-label">no server selected</strong>. Only files built for that exact version (and loader/platform, for mods and plugins) will show up.</p>
+      </div>
+
+      <div class="browse-layout">
+        <aside class="filter-sidebar">
+          <div class="filter-group">
+            <div class="filter-group-head">
+              <h3>Content</h3>
+            </div>
+            <div class="segmented segmented-block" id="type-toggle">
+              <button class="seg active" data-type="mod">Mods</button>
+              <button class="seg" data-type="plugin">Plugins</button>
+              <button class="seg" data-type="datapack">Datapacks</button>
+            </div>
+          </div>
+
+          <div class="filter-group">
+            <div class="filter-group-head">
+              <h3>Source</h3>
+            </div>
+            <div class="segmented segmented-block" id="source-toggle">
+              <button class="seg active" data-source="modrinth">Modrinth</button>
+              <button class="seg" data-source="curseforge">CurseForge</button>
+            </div>
+          </div>
+
+          <div class="filter-group" id="loader-filter-group">
+            <div class="filter-group-head">
+              <h3 id="loader-filter-title">Loader</h3>
+            </div>
+            <div class="filter-checks" id="loader-checks"></div>
+          </div>
+
+          <div class="filter-group">
+            <div class="filter-group-head collapsible" id="version-filter-toggle">
+              <h3>Game version</h3>
+              <span class="chevron">&#9662;</span>
+            </div>
+            <div class="version-search">
+              <input id="version-search-input" type="text" placeholder="Search versions...">
+            </div>
+            <div class="filter-checks version-checks" id="version-checks"></div>
+          </div>
+        </aside>
+
+        <div class="browse-main">
+          <div class="browse-controls">
+            <input id="search-input" type="text" placeholder="Search for content...">
+            <button id="btn-search" class="btn-primary">Search</button>
+          </div>
+          <p class="status-line" id="search-status"></p>
+
+          <div class="results-grid" id="results-grid"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- INSTALLED -->
+    <section class="panel" id="panel-installed">
+      <div class="panel-head">
+        <h1>Installed on <span id="installed-server-label">this server</span></h1>
+        <p>Currently targeting Minecraft <strong id="installed-mc-version">—</strong> / <strong id="installed-loader">—</strong>.
+          After you update the server jar, revisit <em>Server Setup</em> to bump the version, then hit Check for Updates below.</p>
+      </div>
+      <button id="btn-check-updates" class="btn-primary">Check for updates</button>
+      <p class="status-line" id="update-status"></p>
+
+      <h3 class="group-label">Mods</h3>
+      <div class="installed-list" id="installed-mods"></div>
+      <h3 class="group-label">Plugins</h3>
+      <div class="installed-list" id="installed-plugins"></div>
+      <h3 class="group-label">Datapacks</h3>
+      <div class="installed-list" id="installed-datapacks"></div>
+    </section>
+
+    <!-- SETTINGS -->
+    <section class="panel" id="panel-settings">
+      <div class="panel-head">
+        <h1>Settings</h1>
+        <p>CurseForge requires a personal API key. Grab one free at <a href="https://console.curseforge.com/" target="_blank" rel="noopener">console.curseforge.com</a> (Create API Key, "Core" API).</p>
+      </div>
+      <div class="card">
+        <label>CurseForge API key
+          <input id="cf-key" type="password" placeholder="paste key here">
+        </label>
+        <button id="btn-save-key" class="btn-primary">Save key</button>
+        <p class="status-line" id="settings-status"></p>
+      </div>
+
+      <div class="card">
+        <h2>Preview mode</h2>
+        <p class="hint" style="margin-top:0">Search stays live against Modrinth / CurseForge. Install, update and remove actions are simulated instead of touching real files — safe to click through freely.</p>
+        <label class="toggle-row">
+          <input type="checkbox" id="preview-toggle">
+          <span>Enable preview mode</span>
+        </label>
+        <p class="status-line" id="preview-status"></p>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<template id="tpl-result-card">
+  <article class="result-card">
+    <img class="result-icon" alt="">
+    <div class="result-body">
+      <h3 class="result-title"></h3>
+      <p class="result-author-line"><span class="result-author"></span></p>
+      <p class="result-desc"></p>
+      <div class="result-tags"></div>
+    </div>
+    <div class="result-side">
+      <span class="result-downloads"></span>
+      <button class="btn-install">Install</button>
+    </div>
+  </article>
+</template>
+
+<template id="tpl-tag">
+  <span class="tag-chip"><span class="tag-icon"></span><span class="tag-label"></span></span>
+</template>
+
+<template id="tpl-installed-row">
+  <article class="installed-row">
+    <img class="installed-icon" alt="">
+    <div class="installed-main">
+      <span class="installed-title"></span>
+      <span class="installed-version"></span>
+      <span class="badge source-badge"></span>
+      <span class="badge preview-badge" style="display:none">preview</span>
+    </div>
+    <div class="installed-status">
+      <span class="status-pill"></span>
+      <span class="status-message"></span>
+    </div>
+    <div class="installed-actions">
+      <button class="btn-update" style="display:none">Update</button>
+      <button class="btn-uninstall">Remove</button>
+    </div>
+  </article>
+</template>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
