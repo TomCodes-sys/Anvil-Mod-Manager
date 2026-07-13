@@ -37,6 +37,12 @@
 
 * { box-sizing: border-box; }
 
+/* [hidden] must always win over an explicit `display` set by class rules
+   like .btn-secondary — same specificity, and author rules beat the UA
+   stylesheet, so without this, "hidden" buttons/badges could stay visible
+   and clickable (e.g. install/changelog/revert buttons showing too early). */
+[hidden] { display: none !important; }
+
 svg[data-lucide], i[data-lucide] { width: 14px; height: 14px; vertical-align: -2px; margin-right: 5px; display: inline-block; }
 .btn-uninstall svg, .btn-uninstall i, .info-btn svg, .info-btn i { margin-right: 0; }
 
