@@ -3,8 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Ore &amp; Anvil — Crafty Mod Manager</title>
+<title>Anvil Mod Manager — Crafty Mod Manager</title>
 <link rel="stylesheet" href="/static/style.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/lucide-static/0.436.0/umd/lucide.min.js"></script>
 </head>
 <body>
 
@@ -13,16 +14,17 @@
     <div class="brand">
       <span class="brand-mark" aria-hidden="true">&gt;_</span>
       <div class="brand-text">
-        <span class="brand-title">ore &amp; anvil</span>
+        <span class="brand-title">anvil mod manager</span>
         <span class="brand-sub">mods, plugins &amp; datapacks for crafty controller</span>
       </div>
     </div>
     <nav class="tabs" id="tabs">
       <span class="tab-indicator" id="tab-indicator"></span>
-      <button class="tab active" data-tab="setup">Server Setup</button>
-      <button class="tab" data-tab="browse">Browse &amp; Install</button>
-      <button class="tab" data-tab="installed">Installed</button>
-      <button class="tab" data-tab="settings">Settings</button>
+      <button class="tab active" data-tab="setup"><i data-lucide="server"></i>Server Setup</button>
+      <button class="tab" data-tab="browse"><i data-lucide="search"></i>Browse &amp; Install</button>
+      <button class="tab" data-tab="installed"><i data-lucide="package-check"></i>Installed</button>
+      <button class="tab" data-tab="modpack"><i data-lucide="boxes"></i>Modpack</button>
+      <button class="tab" data-tab="settings"><i data-lucide="settings"></i>Settings</button>
     </nav>
   </header>
 
@@ -30,6 +32,13 @@
     <span class="preview-dot"></span>
     <span><strong>Preview mode</strong> — search is live, but installs, updates and removals are simulated. Nothing is written to or deleted from disk.</span>
     <button id="btn-exit-preview" class="btn-ghost">Turn off</button>
+  </div>
+
+  <div class="update-banner" id="update-banner" style="display:none">
+    <i data-lucide="arrow-up-circle"></i>
+    <span id="update-banner-text">Update available.</span>
+    <a id="update-banner-link" class="btn-ghost" href="#" target="_blank" rel="noopener">View changes</a>
+    <button id="update-banner-btn" class="btn-secondary" onclick="applySelfUpdate()">Update now</button>
   </div>
 
   <main class="content">
@@ -46,14 +55,14 @@
           <h2>Just want to try it first?</h2>
           <p class="hint" style="margin:0">Skip picking a real folder. This loads a fake "Preview Server" on Minecraft 1.20.1 / Fabric so you can search and click Install without touching your disk.</p>
         </div>
-        <button id="btn-load-demo" class="btn-secondary">Load demo server</button>
+        <button id="btn-load-demo" class="btn-secondary"><i data-lucide="flask-conical"></i>Load demo server</button>
       </div>
 
       <div class="card-row">
         <div class="card">
           <h2>1. Locate the server folder</h2>
           <div class="path-bar">
-            <button id="btn-up" class="btn-ghost" title="Up one level">&uarr;</button>
+            <button id="btn-up" class="btn-ghost" title="Up one level"><i data-lucide="arrow-up"></i></button>
             <input id="path-input" type="text" placeholder="/var/opt/minecraft/crafty/servers/&lt;server-id&gt;">
             <button id="btn-go" class="btn-secondary">Go</button>
           </div>
@@ -119,9 +128,9 @@
               <h3>Content</h3>
             </div>
             <div class="segmented segmented-block" id="type-toggle">
-              <button class="seg active" data-type="mod">Mods</button>
-              <button class="seg" data-type="plugin">Plugins</button>
-              <button class="seg" data-type="datapack">Datapacks</button>
+              <button class="seg active" data-type="mod"><i data-lucide="box"></i>Mods</button>
+              <button class="seg" data-type="plugin"><i data-lucide="plug"></i>Plugins</button>
+              <button class="seg" data-type="datapack"><i data-lucide="package"></i>Datapacks</button>
             </div>
           </div>
 
@@ -145,7 +154,7 @@
           <div class="filter-group">
             <div class="filter-group-head collapsible" id="version-filter-toggle">
               <h3>Game version</h3>
-              <span class="chevron">&#9662;</span>
+              <i data-lucide="chevron-down" class="chevron"></i>
             </div>
             <div class="version-search">
               <input id="version-search-input" type="text" placeholder="Search versions...">
@@ -157,11 +166,17 @@
         <div class="browse-main">
           <div class="browse-controls">
             <input id="search-input" type="text" placeholder="Search for content...">
-            <button id="btn-search" class="btn-primary">Search</button>
+            <button id="btn-search" class="btn-primary"><i data-lucide="search"></i>Search</button>
           </div>
           <p class="status-line" id="search-status"></p>
 
           <div class="results-grid" id="results-grid"></div>
+
+          <div class="pagination" id="pagination" style="display:none">
+            <button class="btn-secondary" id="page-prev"><i data-lucide="chevron-left"></i>Prev</button>
+            <div class="page-numbers" id="page-numbers"></div>
+            <button class="btn-secondary" id="page-next">Next<i data-lucide="chevron-right"></i></button>
+          </div>
         </div>
       </div>
     </section>
@@ -173,7 +188,11 @@
         <p>Currently targeting Minecraft <strong id="installed-mc-version">—</strong> / <strong id="installed-loader">—</strong>.
           After you update the server jar, revisit <em>Server Setup</em> to bump the version, then hit Check for Updates below.</p>
       </div>
-      <button id="btn-check-updates" class="btn-primary">Check for updates</button>
+      <div class="installed-actions-row">
+        <button id="btn-check-updates" class="btn-primary"><i data-lucide="refresh-cw"></i>Check for updates</button>
+        <button id="btn-update-all" class="btn-secondary" style="display:none"><i data-lucide="download"></i>Update all</button>
+        <button id="btn-restart-server" class="btn-ghost" title="Restart the server through Crafty's API"><i data-lucide="power"></i>Restart server</button>
+      </div>
       <p class="status-line" id="update-status"></p>
 
       <h3 class="group-label">Mods</h3>
@@ -182,6 +201,34 @@
       <div class="installed-list" id="installed-plugins"></div>
       <h3 class="group-label">Datapacks</h3>
       <div class="installed-list" id="installed-datapacks"></div>
+    </section>
+
+    <!-- MODPACK -->
+    <section class="panel" id="panel-modpack">
+      <div class="panel-head">
+        <h1>Modpack import &amp; export</h1>
+        <p>Import every mod from a Modrinth modpack (.mrpack) in one go, or export everything currently installed on <span id="modpack-server-label">this server</span> as a shareable pack.</p>
+      </div>
+
+      <div class="card">
+        <h2><i data-lucide="download-cloud"></i>Import a modpack</h2>
+        <p class="hint" style="margin-top:0">Paste a Modrinth modpack page URL or a direct <code>.mrpack</code> link, or upload a <code>.mrpack</code> file. Client-only files are skipped automatically.</p>
+        <label>Modrinth modpack URL or .mrpack link
+          <input id="modpack-url" type="text" placeholder="https://modrinth.com/modpack/... or a direct .mrpack URL">
+        </label>
+        <label>...or upload a .mrpack file
+          <input id="modpack-file" type="file" accept=".mrpack,.zip">
+        </label>
+        <button id="btn-modpack-import" class="btn-primary"><i data-lucide="upload"></i>Import modpack</button>
+        <p class="status-line" id="modpack-import-status"></p>
+        <div id="modpack-import-results"></div>
+      </div>
+
+      <div class="card">
+        <h2><i data-lucide="upload-cloud"></i>Export installed mods</h2>
+        <p class="hint" style="margin-top:0">Builds a <code>.mrpack</code> from everything currently installed. Modrinth-sourced mods are re-resolved to their download links; CurseForge-only mods are listed in a text note inside the pack since they can't legally be redistributed.</p>
+        <button id="btn-modpack-export" class="btn-secondary"><i data-lucide="download"></i>Download .mrpack</button>
+      </div>
     </section>
 
     <!-- SETTINGS -->
@@ -199,6 +246,22 @@
       </div>
 
       <div class="card">
+        <h2><i data-lucide="power"></i>Crafty Controller API (restart hook)</h2>
+        <p class="hint" style="margin-top:0">Optional — lets the Installed tab trigger a server restart through Crafty right after an install or update, so the change actually takes effect. Create an API token from your Crafty user profile.</p>
+        <label>Crafty URL
+          <input id="crafty-url" type="text" placeholder="https://192.168.1.50:8443">
+        </label>
+        <label>API token
+          <input id="crafty-token" type="password" placeholder="paste token here">
+        </label>
+        <label>Server ID
+          <input id="crafty-server-id" type="text" placeholder="the server's UUID in Crafty">
+        </label>
+        <button id="btn-save-crafty" class="btn-primary">Save Crafty settings</button>
+        <p class="status-line" id="crafty-settings-status"></p>
+      </div>
+
+      <div class="card">
         <h2>Preview mode</h2>
         <p class="hint" style="margin-top:0">Search stays live against Modrinth / CurseForge. Install, update and remove actions are simulated instead of touching real files — safe to click through freely.</p>
         <label class="toggle-row">
@@ -210,6 +273,21 @@
     </section>
 
   </main>
+</div>
+
+<!-- Changelog preview modal -->
+<div class="modal-overlay" id="changelog-modal" style="display:none">
+  <div class="modal">
+    <div class="modal-head">
+      <h3 id="changelog-title">Changelog</h3>
+      <button class="btn-ghost" id="changelog-close"><i data-lucide="x"></i></button>
+    </div>
+    <div class="modal-body" id="changelog-body">Loading...</div>
+    <div class="modal-actions">
+      <button class="btn-secondary" id="changelog-cancel">Cancel</button>
+      <button class="btn-primary" id="changelog-confirm-update">Update now</button>
+    </div>
+  </div>
 </div>
 
 <template id="tpl-result-card">
@@ -240,13 +318,17 @@
       <span class="installed-version"></span>
       <span class="badge source-badge"></span>
       <span class="badge preview-badge" style="display:none">preview</span>
+      <span class="badge modpack-badge" style="display:none"></span>
     </div>
     <div class="installed-status">
       <span class="status-pill"></span>
       <span class="status-message"></span>
+      <span class="conflict-badge" style="display:none" title=""><i data-lucide="alert-triangle"></i>conflict</span>
     </div>
     <div class="installed-actions">
+      <button class="btn-changelog" style="display:none"><i data-lucide="scroll-text"></i>Changelog</button>
       <button class="btn-update" style="display:none">Update</button>
+      <button class="btn-revert" style="display:none" title="Restore the previous version from .backups/"><i data-lucide="undo-2"></i>Revert</button>
       <button class="btn-uninstall">Remove</button>
     </div>
   </article>

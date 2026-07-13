@@ -1,7 +1,7 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-title Anvil Mod Manager - Preview Demo
+title Anvil Mod Manager
 
 where python >nul 2>nul
 if errorlevel 1 (
@@ -24,14 +24,12 @@ python -m pip install -q --upgrade pip
 pip install -q -r requirements.txt
 
 echo.
-echo Starting Anvil Mod Manager in preview mode...
-echo A demo server (Minecraft 1.20.1 / Fabric) loads automatically.
-echo Search hits the real Modrinth API but nothing is installed to disk.
+echo Starting Anvil Mod Manager...
 echo Close this window to stop the server.
 echo.
 
 start "" cmd /c "call .venv\Scripts\activate.bat && python app.py"
 timeout /t 2 /nobreak >nul
-start "" http://localhost:5151/?autopreview=1
+start "" http://localhost:5151
 
 pause

@@ -11,6 +11,7 @@ const PLUGIN_PLATFORMS = [
   { id: "bukkit", label: "Bukkit" },
   { id: "folia", label: "Folia" },
 ];
+const PAGE_SIZE = 20;
 
 const state = {
   browsePath: null,
@@ -21,7 +22,12 @@ const state = {
   selectedLoaders: new Set(),   // loader/platform filter checkboxes
   selectedVersions: new Set(),  // game version filter checkboxes
   allVersions: [],
+  page: 1,
+  totalResults: 0,
+  lastCheckedResults: [],   // most recent /api/check_updates results, for changelog/update-all
 };
+
+function icons() { if (window.lucide) lucide.createIcons(); }
 
 // ---------------- Preview mode ----------------
 async function loadPreviewMode() {
@@ -82,6 +88,7 @@ document.querySelectorAll(".tab").forEach(btn => {
     document.getElementById("panel-" + btn.dataset.tab).classList.add("active");
     moveTabIndicator(btn);
     if (btn.dataset.tab === "installed") refreshInstalled();
+    if (btn.dataset.tab === "modpack") updateModpackServerLabel();
   });
 });
 window.addEventListener("load", () => moveTabIndicator(document.querySelector(".tab.active")));
@@ -162,6 +169,7 @@ function applySelectedServer(s) {
   document.getElementById("loader-select").value = s.loader || "vanilla";
   document.getElementById("world-name").value = s.world_name || "world";
   document.getElementById("active-server-label").textContent = `${s.name} — MC ${s.mc_version} / ${s.loader}`;
+  updateModpackServerLabel();
   fetch("/api/settings/active_server", {
     method: "POST", headers: {"Content-Type": "application/json"},
     body: JSON.stringify({ server_path: s.server_path }),
@@ -170,6 +178,12 @@ function applySelectedServer(s) {
   // platforms browse plugins by default, everything else browses mods.
   const isPlugin = PLUGIN_PLATFORMS.some(p => p.id === s.loader);
   setSearchType(isPlugin ? "plugin" : "mod");
+}
+
+function updateModpackServerLabel() {
+  const el = document.getElementById("modpack-server-label");
+  if (!el) return;
+  el.textContent = state.selectedServer ? (state.selectedServer.name || state.selectedServer.server_path) : "no server selected";
 }
 
 async function loadSavedServers() {
@@ -212,6 +226,7 @@ restoreActiveServer();
 // ---------------- Browse & install: content type / source toggles ----------------
 function setSearchType(type) {
   state.searchType = type;
+  state.page = 1;
   document.querySelectorAll("#type-toggle .seg").forEach(x => x.classList.toggle("active", x.dataset.type === type));
   renderLoaderFilterGroup();
   runSearch();
@@ -222,6 +237,7 @@ document.querySelectorAll("#source-toggle .seg").forEach(b => b.addEventListener
   document.querySelectorAll("#source-toggle .seg").forEach(x => x.classList.remove("active"));
   b.classList.add("active");
   state.searchSource = b.dataset.source;
+  state.page = 1;
   runSearch();
 }));
 
@@ -256,6 +272,7 @@ function renderLoaderFilterGroup() {
     cb.addEventListener("change", () => {
       if (cb.checked) state.selectedLoaders.add(id); else state.selectedLoaders.delete(id);
       row.classList.toggle("active-label", cb.checked);
+      state.page = 1;
       runSearch();
     });
     const span = document.createElement("span");
@@ -286,6 +303,7 @@ function renderVersionChecks(versions) {
     cb.addEventListener("change", () => {
       if (cb.checked) state.selectedVersions.add(v); else state.selectedVersions.delete(v);
       row.classList.toggle("active-label", cb.checked);
+      state.page = 1;
       runSearch();
     });
     const span = document.createElement("span");
@@ -305,15 +323,15 @@ document.getElementById("version-filter-toggle").addEventListener("click", () =>
 loadGameVersions();
 
 // ---------------- Search ----------------
-document.getElementById("btn-search").addEventListener("click", runSearch);
-document.getElementById("search-input").addEventListener("keydown", e => { if (e.key === "Enter") runSearch(); });
+document.getElementById("btn-search").addEventListener("click", () => { state.page = 1; runSearch(); });
+document.getElementById("search-input").addEventListener("keydown", e => { if (e.key === "Enter") { state.page = 1; runSearch(); } });
 
 // Live search as you type, Modrinth-style — debounced so it doesn't fire an
 // API call on every keystroke.
 let searchDebounce = null;
 document.getElementById("search-input").addEventListener("input", () => {
   clearTimeout(searchDebounce);
-  searchDebounce = setTimeout(runSearch, 400);
+  searchDebounce = setTimeout(() => { state.page = 1; runSearch(); }, 400);
 });
 
 function showResultSkeletons(count = 6) {
@@ -366,10 +384,12 @@ function renderResultTags(container, r) {
 async function runSearch() {
   const statusEl = document.getElementById("search-status");
   const grid = document.getElementById("results-grid");
+  const pagination = document.getElementById("pagination");
   if (!state.selectedServer || !state.selectedServer.mc_version) {
     statusEl.textContent = "Select and save a server profile in Server Setup first.";
     statusEl.classList.add("error");
     grid.innerHTML = "";
+    pagination.style.display = "none";
     return;
   }
   statusEl.classList.remove("error");
@@ -381,19 +401,24 @@ async function runSearch() {
   const mcVersion = state.selectedVersions.size ? [...state.selectedVersions][0] : state.selectedServer.mc_version;
   const loaders = state.selectedLoaders.size ? [...state.selectedLoaders] : (state.selectedServer.loader && state.selectedServer.loader !== "vanilla" ? [state.selectedServer.loader] : []);
   state.lastSearchedVersion = mcVersion;
+  const offset = (state.page - 1) * PAGE_SIZE;
   const params = new URLSearchParams({
     source: state.searchSource,
     query,
     type: state.searchType,
     mc_version: mcVersion,
     loaders: loaders.join(","),
+    offset: String(offset),
   });
   const res = await fetch(`/api/search?${params}`);
   const data = await res.json();
-  if (data.error) { grid.innerHTML = ""; statusEl.textContent = data.error; statusEl.classList.add("error"); return; }
-  if (data.note) { grid.innerHTML = ""; statusEl.textContent = data.note; return; }
+  if (data.error) { grid.innerHTML = ""; statusEl.textContent = data.error; statusEl.classList.add("error"); pagination.style.display = "none"; return; }
+  if (data.note) { grid.innerHTML = ""; statusEl.textContent = data.note; pagination.style.display = "none"; return; }
+  state.totalResults = data.total || 0;
+  const totalPages = Math.max(1, Math.ceil(state.totalResults / PAGE_SIZE));
   statusEl.textContent = `${data.total} result${data.total === 1 ? "" : "s"} for Minecraft ${mcVersion}` +
-    (loaders.length ? ` / ${loaders.join(", ")}` : "");
+    (loaders.length ? ` / ${loaders.join(", ")}` : "") +
+    (totalPages > 1 ? ` — page ${state.page} of ${totalPages}` : "");
   grid.innerHTML = "";
   const tpl = document.getElementById("tpl-result-card");
   data.results.forEach((r, i) => {
@@ -412,7 +437,33 @@ async function runSearch() {
     btn.addEventListener("click", () => installItem(r, btn));
     grid.appendChild(node);
   });
+  renderPagination(totalPages);
+  icons();
 }
+
+function renderPagination(totalPages) {
+  const pagination = document.getElementById("pagination");
+  if (totalPages <= 1) { pagination.style.display = "none"; return; }
+  pagination.style.display = "flex";
+  document.getElementById("page-prev").disabled = state.page <= 1;
+  document.getElementById("page-next").disabled = state.page >= totalPages;
+
+  const numbers = document.getElementById("page-numbers");
+  numbers.innerHTML = "";
+  // Show up to 7 page buttons centered on the current page, Modrinth-style.
+  let start = Math.max(1, state.page - 3);
+  let end = Math.min(totalPages, start + 6);
+  start = Math.max(1, end - 6);
+  for (let p = start; p <= end; p++) {
+    const btn = document.createElement("button");
+    btn.className = "page-num" + (p === state.page ? " active" : "");
+    btn.textContent = String(p);
+    btn.addEventListener("click", () => { state.page = p; runSearch(); document.querySelector(".browse-main").scrollIntoView({ behavior: "smooth", block: "start" }); });
+    numbers.appendChild(btn);
+  }
+}
+document.getElementById("page-prev").addEventListener("click", () => { if (state.page > 1) { state.page--; runSearch(); } });
+document.getElementById("page-next").addEventListener("click", () => { state.page++; runSearch(); });
 
 async function installItem(r, btn) {
   btn.disabled = true;
@@ -446,6 +497,8 @@ async function refreshInstalled() {
   renderInstalledList("installed-mods", data.mods);
   renderInstalledList("installed-plugins", data.plugins || []);
   renderInstalledList("installed-datapacks", data.datapacks);
+  document.getElementById("btn-update-all").style.display = "none";
+  icons();
 }
 
 function renderInstalledList(elId, items, statuses) {
@@ -463,20 +516,39 @@ function renderInstalledList(elId, items, statuses) {
     node.querySelector(".installed-version").textContent = item.version_number || item.file_name;
     node.querySelector(".source-badge").textContent = item.source;
     if (item.preview) node.querySelector(".preview-badge").style.display = "inline-block";
+    if (item.modpack) {
+      const mb = node.querySelector(".modpack-badge");
+      mb.style.display = "inline-block";
+      mb.textContent = item.modpack;
+      mb.title = `Imported from modpack: ${item.modpack}`;
+    }
     const status = statuses ? statuses.find(s => s.project_id === item.project_id && s.source === item.source) : null;
     const pill = node.querySelector(".status-pill");
     const msg = node.querySelector(".status-message");
     const updateBtn = node.querySelector(".btn-update");
+    const changelogBtn = node.querySelector(".btn-changelog");
+    const conflictBadge = node.querySelector(".conflict-badge");
     if (status) {
       pill.classList.add(status.status);
       msg.textContent = status.message;
+      if (status.conflicts && status.conflicts.length) {
+        conflictBadge.style.display = "inline-flex";
+        conflictBadge.title = `Known to conflict with: ${status.conflicts.join(", ")}`;
+      }
       if (status.status === "update_available") {
         updateBtn.style.display = "inline-block";
         updateBtn.addEventListener("click", () => applyUpdate(item, updateBtn));
+        changelogBtn.style.display = "inline-block";
+        changelogBtn.addEventListener("click", () => openChangelog(item, status.latest, updateBtn));
       }
     } else {
       pill.classList.add("unknown");
       msg.textContent = `Targeting Minecraft ${item.mc_version}`;
+    }
+    if (item.last_backup) {
+      const revertBtn = node.querySelector(".btn-revert");
+      revertBtn.style.display = "inline-block";
+      revertBtn.addEventListener("click", () => revertItem(item, revertBtn));
     }
     node.querySelector(".btn-uninstall").addEventListener("click", async (e) => {
       await fetch("/api/uninstall", {
@@ -487,6 +559,7 @@ function renderInstalledList(elId, items, statuses) {
     });
     el.appendChild(node);
   });
+  icons();
 }
 
 document.getElementById("btn-check-updates").addEventListener("click", async () => {
@@ -497,6 +570,7 @@ document.getElementById("btn-check-updates").addEventListener("click", async () 
     body: JSON.stringify({ server_path: state.selectedServer.server_path }),
   });
   const data = await res.json();
+  state.lastCheckedResults = data.results;
   const mods = data.results.filter(r => r.type === "mod");
   const plugins = data.results.filter(r => r.type === "plugin");
   const datapacks = data.results.filter(r => r.type === "datapack");
@@ -505,8 +579,48 @@ document.getElementById("btn-check-updates").addEventListener("click", async () 
   renderInstalledList("installed-datapacks", datapacks, data.results);
   const updates = data.results.filter(r => r.status === "update_available").length;
   const stuck = data.results.filter(r => r.status === "no_compatible_version").length;
+  const conflicts = data.results.filter(r => r.conflicts && r.conflicts.length).length;
   statusEl.textContent = `${updates} update${updates === 1 ? "" : "s"} available. ` +
-    (stuck ? `${stuck} item${stuck === 1 ? "" : "s"} have no build for Minecraft ${data.mc_version} yet.` : "Everything else has a matching build.");
+    (stuck ? `${stuck} item${stuck === 1 ? "" : "s"} have no build for Minecraft ${data.mc_version} yet. ` : "") +
+    (conflicts ? `${conflicts} known conflict${conflicts === 1 ? "" : "s"} flagged.` : (stuck ? "" : "Everything else has a matching build."));
+  document.getElementById("btn-update-all").style.display = updates > 0 ? "inline-flex" : "none";
+});
+
+document.getElementById("btn-update-all").addEventListener("click", async (e) => {
+  const btn = e.currentTarget;
+  btn.disabled = true;
+  btn.textContent = "Updating all...";
+  const res = await fetch("/api/update_all", {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({ server_path: state.selectedServer.server_path }),
+  });
+  const data = await res.json();
+  const statusEl = document.getElementById("update-status");
+  statusEl.textContent = `Updated ${data.updated.length} item${data.updated.length === 1 ? "" : "s"}.` +
+    (data.failed.length ? ` ${data.failed.length} failed.` : "");
+  btn.disabled = false;
+  btn.innerHTML = '<i data-lucide="download"></i>Update all';
+  await refreshInstalled();
+  document.getElementById("btn-check-updates").click();
+});
+
+document.getElementById("btn-restart-server").addEventListener("click", async (e) => {
+  const btn = e.currentTarget;
+  btn.disabled = true;
+  const original = btn.innerHTML;
+  btn.textContent = "Restarting...";
+  try {
+    const res = await fetch("/api/crafty/restart", { method: "POST" });
+    const data = await res.json();
+    document.getElementById("update-status").textContent = data.ok
+      ? (data.preview ? "Restart simulated (preview mode)." : "Restart triggered through Crafty.")
+      : (data.error || "Restart failed.");
+  } catch (e2) {
+    document.getElementById("update-status").textContent = "Couldn't reach the dashboard to trigger a restart.";
+  }
+  btn.disabled = false;
+  btn.innerHTML = original;
+  icons();
 });
 
 async function applyUpdate(item, btn) {
@@ -519,7 +633,91 @@ async function applyUpdate(item, btn) {
   refreshInstalled();
 }
 
-// ---------------- Settings ----------------
+async function revertItem(item, btn) {
+  btn.disabled = true;
+  btn.textContent = "Reverting...";
+  const res = await fetch("/api/revert", {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({ server_path: state.selectedServer.server_path, source: item.source, project_id: item.project_id, type: item.type }),
+  });
+  const data = await res.json();
+  if (data.error) { btn.textContent = "Failed"; btn.title = data.error; return; }
+  refreshInstalled();
+}
+
+// ---------------- Changelog preview modal ----------------
+let pendingChangelogUpdate = null;
+function openChangelog(item, latest, updateBtn) {
+  const modal = document.getElementById("changelog-modal");
+  document.getElementById("changelog-title").textContent = `${item.title} — changelog`;
+  document.getElementById("changelog-body").textContent = "Loading...";
+  modal.style.display = "flex";
+  pendingChangelogUpdate = { item, updateBtn };
+  const params = new URLSearchParams({ source: item.source, project_id: item.project_id, version_id: latest.version_id });
+  fetch(`/api/changelog?${params}`).then(r => r.json()).then(data => {
+    document.getElementById("changelog-body").textContent = data.changelog || "No changelog was provided for this version.";
+  }).catch(() => {
+    document.getElementById("changelog-body").textContent = "Couldn't load the changelog.";
+  });
+}
+function closeChangelogModal() {
+  document.getElementById("changelog-modal").style.display = "none";
+  pendingChangelogUpdate = null;
+}
+document.getElementById("changelog-close").addEventListener("click", closeChangelogModal);
+document.getElementById("changelog-cancel").addEventListener("click", closeChangelogModal);
+document.getElementById("changelog-modal").addEventListener("click", (e) => { if (e.target.id === "changelog-modal") closeChangelogModal(); });
+document.getElementById("changelog-confirm-update").addEventListener("click", () => {
+  if (!pendingChangelogUpdate) return;
+  const { item, updateBtn } = pendingChangelogUpdate;
+  closeChangelogModal();
+  applyUpdate(item, updateBtn);
+});
+
+// ---------------- Modpack import / export ----------------
+document.getElementById("btn-modpack-import").addEventListener("click", async () => {
+  const statusEl = document.getElementById("modpack-import-status");
+  const resultsEl = document.getElementById("modpack-import-results");
+  resultsEl.innerHTML = "";
+  if (!state.selectedServer) { statusEl.textContent = "Select a server in Server Setup first."; statusEl.classList.add("error"); return; }
+  const url = document.getElementById("modpack-url").value.trim();
+  const fileInput = document.getElementById("modpack-file");
+  const file = fileInput.files[0];
+  if (!url && !file) { statusEl.textContent = "Paste a modpack URL or choose a .mrpack file."; statusEl.classList.add("error"); return; }
+
+  statusEl.classList.remove("error");
+  statusEl.textContent = "Importing — downloading and installing every server-compatible mod...";
+
+  const form = new FormData();
+  form.append("server_path", state.selectedServer.server_path);
+  if (url) form.append("url", url);
+  if (file) form.append("file", file);
+
+  try {
+    const res = await fetch("/api/modpack/import", { method: "POST", body: form });
+    const data = await res.json();
+    if (data.error) { statusEl.textContent = data.error; statusEl.classList.add("error"); return; }
+    statusEl.textContent = `Imported "${data.modpack_name || "modpack"}" — ${data.installed.length} installed` +
+      (data.skipped.length ? `, ${data.skipped.length} skipped.` : ".") +
+      (data.preview ? " (preview mode — simulated)" : "");
+    if (data.skipped.length) {
+      resultsEl.innerHTML = "<p class='hint'>Skipped: " + data.skipped.map(s => `${s.file} (${s.reason})`).join(", ") + "</p>";
+    }
+    document.getElementById("modpack-url").value = "";
+    fileInput.value = "";
+  } catch (e) {
+    statusEl.textContent = "Import failed — check the URL/file and try again.";
+    statusEl.classList.add("error");
+  }
+});
+
+document.getElementById("btn-modpack-export").addEventListener("click", () => {
+  if (!state.selectedServer) { alert("Select a server in Server Setup first."); return; }
+  const params = new URLSearchParams({ server_path: state.selectedServer.server_path });
+  window.location.href = `/api/modpack/export?${params}`;
+});
+
+// ---------------- Settings: CurseForge key ----------------
 (async function loadKey() {
   const res = await fetch("/api/settings/curseforge_key");
   const data = await res.json();
@@ -530,6 +728,63 @@ document.getElementById("btn-save-key").addEventListener("click", async () => {
   await fetch("/api/settings/curseforge_key", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ key }) });
   document.getElementById("settings-status").textContent = "Saved.";
 });
+
+// ---------------- Settings: Crafty API ----------------
+(async function loadCraftySettings() {
+  const res = await fetch("/api/settings/crafty");
+  const data = await res.json();
+  document.getElementById("crafty-url").value = data.url || "";
+  document.getElementById("crafty-server-id").value = data.server_id || "";
+  document.getElementById("crafty-token").placeholder = data.token_set ? "(saved — leave blank to keep)" : "paste token here";
+})();
+document.getElementById("btn-save-crafty").addEventListener("click", async () => {
+  const url = document.getElementById("crafty-url").value.trim();
+  const token = document.getElementById("crafty-token").value.trim();
+  const server_id = document.getElementById("crafty-server-id").value.trim();
+  const body = { url, server_id };
+  if (token) body.token = token;
+  await fetch("/api/settings/crafty", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify(body) });
+  document.getElementById("crafty-settings-status").textContent = "Saved.";
+  document.getElementById("crafty-token").value = "";
+});
+
+// ---------------- Self-update check (GitHub) ----------------
+async function checkSelfUpdate() {
+  try {
+    const res = await fetch("/api/self_update_check");
+    const data = await res.json();
+    const banner = document.getElementById("update-banner");
+    if (data.update_available) {
+      document.getElementById("update-banner-text").textContent =
+        `Update available for Anvil Mod Manager: ${data.current} → ${data.latest} — "${data.latest_message || ""}"`;
+      document.getElementById("update-banner-link").href = data.compare_url;
+      banner.style.display = "flex";
+    } else {
+      banner.style.display = "none";
+    }
+  } catch (e) { /* ignore — GitHub might be unreachable */ }
+}
+async function applySelfUpdate() {
+  const btn = document.getElementById("update-banner-btn");
+  btn.disabled = true;
+  btn.textContent = "Updating...";
+  try {
+    const res = await fetch("/api/self_update", { method: "POST" });
+    const data = await res.json();
+    if (data.ok) {
+      btn.textContent = "Restarting service...";
+      setTimeout(() => location.reload(), 4000);
+    } else {
+      btn.disabled = false;
+      btn.textContent = "Update now";
+      alert(data.error || "Update failed.");
+    }
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = "Update now";
+  }
+}
+checkSelfUpdate();
 
 // ---------------- Auto-preview (launched via "Preview Demo" shortcut) ----------------
 (async function autoPreviewBootstrap() {
@@ -542,3 +797,4 @@ document.getElementById("btn-save-key").addEventListener("click", async () => {
 })();
 
 renderLoaderFilterGroup();
+icons();
