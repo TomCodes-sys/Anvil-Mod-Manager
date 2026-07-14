@@ -45,10 +45,11 @@ its own dashboard once it's done.
 
 ## Features
 
-- **Server Setup** — point it at the folder Crafty runs a server from. It auto-detects the Minecraft version (read
-  from `version.json` inside the server jar), the loader/platform (Fabric / Quilt / Forge / NeoForge for modded
-  servers, Paper / Purpur / Spigot / Bukkit / Folia for plugin servers, or vanilla, detected from installed
-  libraries and jar names), and the world folder name (read from `server.properties`). You can override any of it.
+- **Server Setup** — connect your Crafty URL + API token once in Settings, then just pick your server by name from
+  a dropdown; its folder, Minecraft version (read from `version.json` inside the server jar), loader/platform
+  (Fabric / Quilt / Forge / NeoForge for modded servers, Paper / Purpur / Spigot / Bukkit / Folia for plugin
+  servers, or vanilla), and world folder name (read from `server.properties`) are all detected in one step — no
+  manual browsing. An **Advanced: point at a folder manually** section is still there for non-standard installs.
 - **Browse & Install** — search Modrinth or CurseForge for mods, Modrinth for plugins, or Modrinth for datapacks.
   A sidebar lets you filter by loader/platform and Minecraft version. Results are paginated 20 at a time with page
   numbers at the bottom, same as Modrinth's own site, and the whole page scrolls together — the results list simply
@@ -92,7 +93,9 @@ its own dashboard once it's done.
 - A free [CurseForge API key](https://console.curseforge.com/) if you want CurseForge search, changelogs, or
   incompatibility warnings (Modrinth needs no key). CurseForge search covers mods only — datapacks are
   Modrinth-only.
-- Optional: a Crafty API token (from your Crafty user profile) if you want the restart-hook button to work.
+- A Crafty URL + API token (from your Crafty user profile — Settings tab has step-by-step instructions) if you
+  want the "pick your server" dropdown, live running-status dots, the restart-hook button, or the running-server
+  download guard. Without it, use the Advanced manual-folder-picker instead.
 
 ## Other setup options
 
@@ -126,15 +129,15 @@ from elsewhere). Set `PORT=xxxx` as an environment variable if 5151 is already t
 
 ## Using it
 
-1. **Server Setup tab** — browse to your Crafty server's folder, confirm the detected version/loader, and save.
-2. **Browse & Install tab** — search and install. Files land straight in `mods/`, `plugins/`, or
+1. **Settings tab** — add your Crafty URL + API token (step-by-step instructions right there).
+2. **Server Setup tab** — pick your server by name from the dropdown; version/loader are detected automatically.
+3. **Browse & Install tab** — search and install. Files land straight in `mods/`, `plugins/`, or
    `<world>/datapacks/`, exactly where Crafty expects them. Use the page numbers at the bottom to see more results.
-3. **Modpack tab** — or import a whole pack at once instead of searching mod-by-mod.
-4. After you update your server's Minecraft version, go back to **Server Setup**, update the version field, and
-   save.
-5. **Installed tab** → **Check for updates**. Review changelogs before updating, use **Update all** for bulk
-   updates, and **Revert** if an update causes problems. Hit **Restart server** (after setting up the Crafty API in
-   Settings) to apply the change immediately.
+4. **Modpack tab** — or import a whole pack at once instead of searching mod-by-mod.
+5. After you update your server's Minecraft version, go back to **Server Setup** — re-picking it refreshes the
+   detected version automatically, or edit it manually via Advanced.
+6. **Installed tab** → **Check for updates**. Review changelogs before updating, use **Update all** for bulk
+   updates, and **Revert** if an update causes problems. Hit **Restart server** to apply the change immediately.
 
 ## Notes on data storage
 

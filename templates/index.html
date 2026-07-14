@@ -35,7 +35,7 @@
   </div>
 
   <div class="update-banner" id="update-banner" style="display:none">
-    <i data-lucide="arrow-up-circle"></i>
+    <i data-lucide="circle-arrow-up"></i>
     <span id="update-banner-text">Update available.</span>
     <a id="update-banner-link" class="btn-ghost" href="#" target="_blank" rel="noopener">View changes</a>
     <button id="update-banner-btn" class="btn-secondary" onclick="applySelfUpdate()">Update now</button>
@@ -47,7 +47,7 @@
     <section class="panel active" id="panel-setup">
       <div class="panel-head">
         <h1>Point this at your server</h1>
-        <p>Pick the folder Crafty runs your server from — the one that contains <code>server.jar</code>, <code>mods/</code> or <code>plugins/</code>, and <code>world/</code>. Everything below is scoped to this one server.</p>
+        <p>Pick the server from the list Crafty already knows about — its folder, version, and loader are detected automatically. No manual browsing needed.</p>
       </div>
 
       <div class="card demo-card">
@@ -58,59 +58,89 @@
         <button id="btn-load-demo" class="btn-secondary"><i data-lucide="flask-conical"></i>Load demo server</button>
       </div>
 
-      <div class="card-row">
-        <div class="card">
-          <h2>1. Locate the server folder</h2>
-          <div class="path-bar">
-            <button id="btn-up" class="btn-ghost" title="Up one level"><i data-lucide="arrow-up"></i></button>
-            <input id="path-input" type="text" placeholder="/var/opt/minecraft/crafty/servers/&lt;server-id&gt;">
-            <button id="btn-go" class="btn-secondary">Go</button>
-          </div>
-          <div class="dir-list" id="dir-list"></div>
-          <button id="btn-select-server" class="btn-primary" disabled>Use this folder</button>
+      <div class="card" id="crafty-pick-card">
+        <h2><i data-lucide="server"></i>Pick your server</h2>
+        <p class="hint" style="margin-top:0" id="crafty-pick-hint">Loading servers from Crafty…</p>
+
+        <div class="crafty-pick-not-configured" id="crafty-pick-not-configured" style="display:none">
+          <p class="hint" style="margin-top:0">Crafty isn't connected yet. Head to <strong>Settings</strong> and add your Crafty URL + API token — takes under a minute — then come back to this tab.</p>
+          <button class="btn-secondary" id="btn-goto-crafty-settings">Go to Settings</button>
         </div>
 
-        <div class="card">
-          <h2>2. Confirm version &amp; loader</h2>
-          <p class="hint" id="detect-hint">Select a folder to auto-detect.</p>
-          <label>Server name
-            <input id="server-name" type="text" placeholder="Survival SMP">
-          </label>
-          <label>Minecraft version
-            <input id="mc-version" type="text" placeholder="1.20.1">
-          </label>
-          <label>Loader / platform
-            <select id="loader-select">
-              <optgroup label="Vanilla">
-                <option value="vanilla">Vanilla (datapacks only)</option>
-              </optgroup>
-              <optgroup label="Mod loaders">
-                <option value="fabric">Fabric</option>
-                <option value="quilt">Quilt</option>
-                <option value="forge">Forge</option>
-                <option value="neoforge">NeoForge</option>
-              </optgroup>
-              <optgroup label="Plugin platforms">
-                <option value="paper">Paper</option>
-                <option value="purpur">Purpur</option>
-                <option value="spigot">Spigot</option>
-                <option value="bukkit">Bukkit</option>
-                <option value="folia">Folia</option>
-              </optgroup>
+        <div id="crafty-pick-configured" style="display:none">
+          <label>Server (from Crafty)
+            <select id="crafty-pick-select">
+              <option value="">— choose a server —</option>
             </select>
           </label>
-          <label>World folder (for datapacks)
-            <input id="world-name" type="text" placeholder="world">
-          </label>
-          <button id="btn-save-config" class="btn-primary">Save server profile</button>
-          <p class="status-line" id="setup-status"></p>
+          <p class="status-line" id="crafty-pick-status"></p>
         </div>
       </div>
 
+      <details class="card" id="manual-browse-card">
+        <summary><i data-lucide="folder-cog"></i> Advanced: point at a folder manually</summary>
+        <p class="hint">Only needed if Crafty isn't installed via the Anvil Server Installer's default layout, or you're managing a server Crafty doesn't know about.</p>
+        <div class="card-row">
+          <div class="card">
+            <h2>1. Locate the server folder</h2>
+            <div class="path-bar">
+              <button id="btn-up" class="btn-ghost" title="Up one level"><i data-lucide="arrow-up"></i></button>
+              <input id="path-input" type="text" placeholder="/var/opt/minecraft/crafty/servers/&lt;server-id&gt;">
+              <button id="btn-go" class="btn-secondary">Go</button>
+            </div>
+            <div class="dir-list" id="dir-list"></div>
+            <button id="btn-select-server" class="btn-primary" disabled>Use this folder</button>
+          </div>
+
+          <div class="card">
+            <h2>2. Confirm version &amp; loader</h2>
+            <p class="hint" id="detect-hint">Select a folder to auto-detect.</p>
+            <label>Server name
+              <input id="server-name" type="text" placeholder="Survival SMP">
+            </label>
+            <label>Minecraft version
+              <input id="mc-version" type="text" placeholder="1.20.1">
+            </label>
+            <label>Loader / platform
+              <select id="loader-select">
+                <optgroup label="Vanilla">
+                  <option value="vanilla">Vanilla (datapacks only)</option>
+                </optgroup>
+                <optgroup label="Mod loaders">
+                  <option value="fabric">Fabric</option>
+                  <option value="quilt">Quilt</option>
+                  <option value="forge">Forge</option>
+                  <option value="neoforge">NeoForge</option>
+                </optgroup>
+                <optgroup label="Plugin platforms">
+                  <option value="paper">Paper</option>
+                  <option value="purpur">Purpur</option>
+                  <option value="spigot">Spigot</option>
+                  <option value="bukkit">Bukkit</option>
+                  <option value="folia">Folia</option>
+                </optgroup>
+              </select>
+            </label>
+            <label>World folder (for datapacks)
+              <input id="world-name" type="text" placeholder="world">
+            </label>
+            <button id="btn-save-config" class="btn-primary">Save server profile</button>
+            <p class="status-line" id="setup-status"></p>
+          </div>
+        </div>
+      </details>
+
       <div class="card" id="saved-servers-card">
         <h2>Saved servers</h2>
-        <p class="hint" style="margin-top:-6px">The server you last worked on is auto-selected next time you open the dashboard.</p>
+        <p class="hint" style="margin-top:-6px">The server you last worked on is auto-selected next time you open the dashboard. The colored dot shows whether it's currently running in Crafty.</p>
         <div class="server-chip-row" id="saved-servers"></div>
+
+        <div class="crafty-link-row">
+          <label for="crafty-link-select" style="margin:0; font-size:12.5px; color:var(--ink-dim);">Linked Crafty server:</label>
+          <select id="crafty-link-select"><option value="">— not linked —</option></select>
+          <button id="btn-auto-detect-crafty" class="btn-secondary btn-small">Auto-detect all</button>
+          <span class="crafty-link-hint" id="crafty-link-hint"></span>
+        </div>
       </div>
     </section>
 
@@ -119,6 +149,12 @@
       <div class="panel-head">
         <h1>Browse &amp; install</h1>
         <p>Results are filtered to <strong id="active-server-label">no server selected</strong>. Only files built for that exact version (and loader/platform, for mods and plugins) will show up.</p>
+      </div>
+
+      <div class="downloading-to-banner" id="downloading-to-banner">
+        <i data-lucide="download"></i>
+        <span>Downloading to: <strong id="downloading-to-name">no server selected</strong></span>
+        <span id="downloading-to-status"></span>
       </div>
 
       <div class="browse-layout">
@@ -246,19 +282,42 @@
       </div>
 
       <div class="card">
-        <h2><i data-lucide="power"></i>Crafty Controller API (restart hook)</h2>
-        <p class="hint" style="margin-top:0">Optional — lets the Installed tab trigger a server restart through Crafty right after an install or update, so the change actually takes effect. Create an API token from your Crafty user profile.</p>
+        <h2><i data-lucide="power"></i>Crafty Controller API</h2>
+        <p class="hint" style="margin-top:0">Connect Crafty once here — it powers the restart hook, the "pick your server" dropdown on Server Setup, live running-status dots, and blocking mod/plugin downloads while a server is running.</p>
+
+        <div class="crafty-howto">
+          <p class="hint" style="margin:0 0 4px"><strong>Getting your API token:</strong></p>
+          <ol class="crafty-howto-list">
+            <li>Log into Crafty's web UI</li>
+            <li>Click your username (top right) → <strong>Profile</strong></li>
+            <li>Scroll to the <strong>API Keys</strong> section → click <strong>Generate Key</strong></li>
+            <li>Tick <strong>superuser</strong> if you want it to see every server, not just ones shared to that user</li>
+            <li>Copy the token immediately — Crafty only shows it once — and paste it below</li>
+          </ol>
+        </div>
+
         <label>Crafty URL
-          <input id="crafty-url" type="text" placeholder="https://192.168.1.50:8443">
+          <div class="input-with-button">
+            <input id="crafty-url" type="text" placeholder="https://192.168.1.50:8443">
+            <button id="btn-detect-crafty-url" class="btn-ghost btn-small" type="button" title="Detect this machine's local IP">Auto-detect</button>
+          </div>
         </label>
         <label>API token
           <input id="crafty-token" type="password" placeholder="paste token here">
         </label>
-        <label>Server ID
-          <input id="crafty-server-id" type="text" placeholder="the server's UUID in Crafty">
-        </label>
         <button id="btn-save-crafty" class="btn-primary">Save Crafty settings</button>
         <p class="status-line" id="crafty-settings-status"></p>
+        <details class="crafty-advanced">
+          <summary>Advanced: Crafty servers folder</summary>
+          <p class="hint">Where each Crafty server's folder lives on this machine, so picking a server from the
+            dropdown on Server Setup can find its files without you browsing manually. Defaults to
+            <code>/opt/crafty/servers</code> — the path the Anvil Server Installer uses. Only change this if your
+            Crafty install uses a different layout.</p>
+          <label>Crafty servers folder
+            <input id="crafty-servers-root" type="text" placeholder="/opt/crafty/servers">
+          </label>
+        </details>
+        <p class="hint">Which Crafty server each saved profile below maps to is set per-server in the <strong>Saved servers</strong> card on the Server Setup tab, not here.</p>
       </div>
 
       <div class="card">

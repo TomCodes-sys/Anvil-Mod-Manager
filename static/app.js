@@ -25,6 +25,9 @@ const state = {
   page: 1,
   totalResults: 0,
   lastCheckedResults: [],   // most recent /api/check_updates results, for changelog/update-all
+  serverStatuses: {},       // server_path -> {linked, crafty_name, running}
+  craftyServers: [],        // live list from /api/crafty/servers, for the link picker
+  installBlocked: false,    // true when the active server is confirmed running in Crafty
 };
 
 function icons() { if (window.lucide) lucide.createIcons(); }
@@ -178,6 +181,8 @@ function applySelectedServer(s) {
   // platforms browse plugins by default, everything else browses mods.
   const isPlugin = PLUGIN_PLATFORMS.some(p => p.id === s.loader);
   setSearchType(isPlugin ? "plugin" : "mod");
+  updateDownloadingToBanner();
+  populateCraftyLinkSelect();
 }
 
 function updateModpackServerLabel() {
@@ -186,9 +191,55 @@ function updateModpackServerLabel() {
   el.textContent = state.selectedServer ? (state.selectedServer.name || state.selectedServer.server_path) : "no server selected";
 }
 
+// ---------------- Crafty status: badges, "downloading to" banner, gating ----------------
+
+function statusDotClass(status) {
+  if (!status || status.running === null || status.running === undefined) return "unlinked";
+  return status.running ? "running" : "stopped";
+}
+
+function statusLabel(status) {
+  if (!status || !status.linked) return "not linked to Crafty";
+  if (status.running === true) return `running (${status.crafty_name || "Crafty"})`;
+  if (status.running === false) return `stopped (${status.crafty_name || "Crafty"})`;
+  return `linked to ${status.crafty_name || "Crafty"} — status unknown`;
+}
+
+async function refreshServerStatuses() {
+  try {
+    const res = await fetch("/api/servers/status");
+    state.serverStatuses = await res.json();
+  } catch (e) { /* ignore — badges just stay neutral */ }
+}
+
+function updateDownloadingToBanner() {
+  const banner = document.getElementById("downloading-to-banner");
+  const nameEl = document.getElementById("downloading-to-name");
+  const statusEl = document.getElementById("downloading-to-status");
+  if (!banner) return;
+  if (!state.selectedServer) {
+    nameEl.textContent = "no server selected";
+    statusEl.textContent = "";
+    banner.classList.remove("blocked");
+    state.installBlocked = false;
+    return;
+  }
+  const status = state.serverStatuses[state.selectedServer.server_path];
+  nameEl.textContent = state.selectedServer.name || state.selectedServer.server_path;
+  const running = status && status.running === true;
+  state.installBlocked = !!running;
+  statusEl.textContent = status ? `· ${statusLabel(status)}` : "";
+  banner.classList.toggle("blocked", running);
+  banner.querySelector("span:not(#downloading-to-status)").innerHTML =
+    running
+      ? `⛔ Won't download here — <strong id="downloading-to-name">${nameEl.textContent}</strong> is running`
+      : `Downloading to: <strong id="downloading-to-name">${nameEl.textContent}</strong>`;
+}
+
 async function loadSavedServers() {
   const res = await fetch("/api/servers");
   const servers = await res.json();
+  await refreshServerStatuses();
   const row = document.getElementById("saved-servers");
   row.innerHTML = "";
   servers.forEach(s => {
@@ -196,7 +247,12 @@ async function loadSavedServers() {
     chip.className = "server-chip" + (state.selectedServer && state.selectedServer.server_path === s.server_path ? " active" : "");
     const name = document.createElement("span");
     name.className = "server-chip-name";
-    name.textContent = s.name || s.server_path;
+    const status = state.serverStatuses[s.server_path];
+    const dot = document.createElement("span");
+    dot.className = "status-dot " + statusDotClass(status);
+    dot.title = statusLabel(status);
+    name.appendChild(dot);
+    name.appendChild(document.createTextNode(s.name || s.server_path));
     const meta = document.createElement("span");
     meta.className = "server-chip-meta";
     meta.textContent = s.mc_version ? `MC ${s.mc_version} · ${s.loader || "vanilla"}` : "no version set";
@@ -208,7 +264,74 @@ async function loadSavedServers() {
     });
     row.appendChild(chip);
   });
+  updateDownloadingToBanner();
 }
+
+// ---------------- Crafty server linking ----------------
+
+async function populateCraftyLinkSelect() {
+  const select = document.getElementById("crafty-link-select");
+  const hint = document.getElementById("crafty-link-hint");
+  if (!select || !state.selectedServer) return;
+
+  if (!state.craftyServers.length) {
+    try {
+      const res = await fetch("/api/crafty/servers");
+      const data = await res.json();
+      if (data.ok) state.craftyServers = data.servers;
+      else hint.textContent = data.error || "";
+    } catch (e) { /* ignore */ }
+  }
+
+  select.innerHTML = '<option value="">— not linked —</option>';
+  state.craftyServers.forEach(cs => {
+    const opt = document.createElement("option");
+    opt.value = cs.id;
+    opt.textContent = cs.name + (cs.running === true ? " (running)" : cs.running === false ? " (stopped)" : "");
+    select.appendChild(opt);
+  });
+  select.value = state.selectedServer.crafty_server_id || "";
+}
+
+document.getElementById("crafty-link-select")?.addEventListener("change", async (e) => {
+  if (!state.selectedServer) return;
+  const id = e.target.value;
+  const match = state.craftyServers.find(cs => cs.id === id);
+  await fetch("/api/server/link_crafty", {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({
+      server_path: state.selectedServer.server_path,
+      crafty_server_id: id,
+      crafty_server_name: match ? match.name : "",
+    }),
+  });
+  document.getElementById("crafty-link-hint").textContent = id ? "Linked." : "Unlinked.";
+  await loadSavedServers();
+});
+
+document.getElementById("btn-auto-detect-crafty")?.addEventListener("click", async () => {
+  const btn = document.getElementById("btn-auto-detect-crafty");
+  const hint = document.getElementById("crafty-link-hint");
+  btn.disabled = true;
+  btn.textContent = "Detecting…";
+  try {
+    const res = await fetch("/api/crafty/auto_match", { method: "POST" });
+    const data = await res.json();
+    if (!data.ok) {
+      hint.textContent = data.error || "Couldn't reach Crafty.";
+    } else {
+      state.craftyServers = data.crafty_servers || [];
+      hint.textContent = data.matched.length
+        ? `Matched ${data.matched.length} server${data.matched.length === 1 ? "" : "s"} by name.`
+        : "No new exact name matches found — link manually above if needed.";
+      await loadSavedServers();
+      populateCraftyLinkSelect();
+    }
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Auto-detect all";
+  }
+});
 
 // On first load, auto-select whichever server was last active — so if
 // you're managing several Crafty servers, the dashboard picks up right
@@ -222,6 +345,93 @@ async function restoreActiveServer() {
   loadSavedServers();
 }
 restoreActiveServer();
+
+// ---------------- Crafty-first server picker ("Pick your server") ----------------
+// This is the whole Server Setup flow for anyone whose Crafty install follows
+// the Anvil Server Installer's default layout: pick a name from a dropdown of
+// Crafty's own servers, and the folder/version/loader are detected server-side
+// in one round trip — no manual browsing, no separate confirm step.
+
+async function loadCraftyPicker() {
+  const hint = document.getElementById("crafty-pick-hint");
+  const notConfigured = document.getElementById("crafty-pick-not-configured");
+  const configured = document.getElementById("crafty-pick-configured");
+  const select = document.getElementById("crafty-pick-select");
+  const status = document.getElementById("crafty-pick-status");
+
+  try {
+    const res = await fetch("/api/crafty/servers");
+    const data = await res.json();
+
+    if (!data.ok) {
+      notConfigured.style.display = "block";
+      configured.style.display = "none";
+      hint.style.display = "none";
+      return;
+    }
+    notConfigured.style.display = "none";
+    configured.style.display = "block";
+    hint.style.display = "none";
+
+    state.craftyServers = data.servers || [];
+    const current = select.value;
+    select.innerHTML = '<option value="">— choose a server —</option>';
+    state.craftyServers.forEach(cs => {
+      const opt = document.createElement("option");
+      opt.value = cs.id;
+      let label = cs.name + (cs.running === true ? " (running)" : cs.running === false ? " (stopped)" : "");
+      if (cs.already_added) label += " ✓ added";
+      else if (cs.path_exists === false) label += " — folder not found";
+      opt.textContent = label;
+      select.appendChild(opt);
+    });
+    // Re-select whichever server is currently active, if it's one of these.
+    if (state.selectedServer && state.selectedServer.crafty_server_id) {
+      select.value = state.selectedServer.crafty_server_id;
+    } else if (current) {
+      select.value = current;
+    }
+    if (!state.craftyServers.length) {
+      status.textContent = "Crafty didn't report any servers yet — create one in Crafty first.";
+    }
+  } catch (e) {
+    status.textContent = "Couldn't reach Crafty — check the URL/token in Settings.";
+  }
+}
+
+document.getElementById("crafty-pick-select")?.addEventListener("change", async (e) => {
+  const status = document.getElementById("crafty-pick-status");
+  const id = e.target.value;
+  if (!id) { status.textContent = ""; return; }
+  const match = state.craftyServers.find(cs => cs.id === id);
+  status.textContent = "Setting this up…";
+  try {
+    const res = await fetch("/api/crafty/select_server", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ crafty_server_id: id, crafty_server_name: match ? match.name : "" }),
+    });
+    const data = await res.json();
+    if (!data.ok) {
+      status.textContent = data.error || "Couldn't set up that server.";
+      status.classList.add("error");
+      return;
+    }
+    status.classList.remove("error");
+    status.textContent = `Ready — ${data.server.name} on Minecraft ${data.server.mc_version || "?"} (${data.server.loader}).`;
+    applySelectedServer(data.server);
+    await loadSavedServers();
+    await loadCraftyPicker();
+  } catch (e) {
+    status.textContent = "Couldn't reach the server.";
+    status.classList.add("error");
+  }
+});
+
+document.getElementById("btn-goto-crafty-settings")?.addEventListener("click", () => {
+  document.querySelector('.tab[data-tab="settings"]').click();
+});
+
+loadCraftyPicker();
 
 // ---------------- Browse & install: content type / source toggles ----------------
 function setSearchType(type) {
@@ -466,6 +676,12 @@ document.getElementById("page-prev").addEventListener("click", () => { if (state
 document.getElementById("page-next").addEventListener("click", () => { state.page++; runSearch(); });
 
 async function installItem(r, btn) {
+  if (state.installBlocked) {
+    btn.textContent = "Server is running";
+    btn.title = "Stop the server in Crafty before installing/updating mods.";
+    setTimeout(() => { btn.textContent = "Install"; }, 2200);
+    return;
+  }
   btn.disabled = true;
   btn.textContent = "Installing...";
   const res = await fetch("/api/install", {
@@ -588,6 +804,11 @@ document.getElementById("btn-check-updates").addEventListener("click", async () 
 
 document.getElementById("btn-update-all").addEventListener("click", async (e) => {
   const btn = e.currentTarget;
+  const statusEl = document.getElementById("update-status");
+  if (state.installBlocked) {
+    statusEl.textContent = "Server is running in Crafty — stop it first, then update.";
+    return;
+  }
   btn.disabled = true;
   btn.textContent = "Updating all...";
   const res = await fetch("/api/update_all", {
@@ -595,7 +816,13 @@ document.getElementById("btn-update-all").addEventListener("click", async (e) =>
     body: JSON.stringify({ server_path: state.selectedServer.server_path }),
   });
   const data = await res.json();
-  const statusEl = document.getElementById("update-status");
+  if (data.error) {
+    statusEl.textContent = data.error;
+    btn.disabled = false;
+    btn.innerHTML = '<i data-lucide="download"></i>Update all';
+    icons();
+    return;
+  }
   statusEl.textContent = `Updated ${data.updated.length} item${data.updated.length === 1 ? "" : "s"}.` +
     (data.failed.length ? ` ${data.failed.length} failed.` : "");
   btn.disabled = false;
@@ -624,12 +851,26 @@ document.getElementById("btn-restart-server").addEventListener("click", async (e
 });
 
 async function applyUpdate(item, btn) {
+  if (state.installBlocked) {
+    btn.textContent = "Server running";
+    btn.title = "Stop the server in Crafty before updating.";
+    setTimeout(() => { btn.textContent = "Update"; }, 2200);
+    return;
+  }
   btn.disabled = true;
   btn.textContent = "Updating...";
-  await fetch("/api/update_mod", {
+  const res = await fetch("/api/update_mod", {
     method: "POST", headers: {"Content-Type": "application/json"},
     body: JSON.stringify({ server_path: state.selectedServer.server_path, source: item.source, project_id: item.project_id, type: item.type }),
   });
+  const data = await res.json();
+  if (data.error) {
+    btn.disabled = false;
+    btn.textContent = "Failed";
+    btn.title = data.error;
+    setTimeout(() => { btn.textContent = "Update"; }, 2200);
+    return;
+  }
   refreshInstalled();
 }
 
@@ -680,6 +921,7 @@ document.getElementById("btn-modpack-import").addEventListener("click", async ()
   const resultsEl = document.getElementById("modpack-import-results");
   resultsEl.innerHTML = "";
   if (!state.selectedServer) { statusEl.textContent = "Select a server in Server Setup first."; statusEl.classList.add("error"); return; }
+  if (state.installBlocked) { statusEl.textContent = "This server is running in Crafty — stop it first, then import."; statusEl.classList.add("error"); return; }
   const url = document.getElementById("modpack-url").value.trim();
   const fileInput = document.getElementById("modpack-file");
   const file = fileInput.files[0];
@@ -734,18 +976,40 @@ document.getElementById("btn-save-key").addEventListener("click", async () => {
   const res = await fetch("/api/settings/crafty");
   const data = await res.json();
   document.getElementById("crafty-url").value = data.url || "";
-  document.getElementById("crafty-server-id").value = data.server_id || "";
   document.getElementById("crafty-token").placeholder = data.token_set ? "(saved — leave blank to keep)" : "paste token here";
+  document.getElementById("crafty-servers-root").value = data.servers_root || "/opt/crafty/servers";
 })();
 document.getElementById("btn-save-crafty").addEventListener("click", async () => {
   const url = document.getElementById("crafty-url").value.trim();
   const token = document.getElementById("crafty-token").value.trim();
-  const server_id = document.getElementById("crafty-server-id").value.trim();
-  const body = { url, server_id };
+  const servers_root = document.getElementById("crafty-servers-root").value.trim();
+  const body = { url, servers_root };
   if (token) body.token = token;
   await fetch("/api/settings/crafty", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify(body) });
   document.getElementById("crafty-settings-status").textContent = "Saved.";
   document.getElementById("crafty-token").value = "";
+  loadSavedServers();
+  loadCraftyPicker();
+});
+
+document.getElementById("btn-detect-crafty-url")?.addEventListener("click", async () => {
+  const btn = document.getElementById("btn-detect-crafty-url");
+  const status = document.getElementById("crafty-settings-status");
+  btn.disabled = true;
+  btn.textContent = "Detecting…";
+  try {
+    const res = await fetch("/api/network/local_ip");
+    const data = await res.json();
+    if (data.ok) {
+      document.getElementById("crafty-url").value = data.suggested_url;
+      status.textContent = `Detected ${data.ip} — double-check this is the machine running Crafty, then save.`;
+    } else {
+      status.textContent = data.error || "Couldn't auto-detect — type the URL in manually.";
+    }
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Auto-detect";
+  }
 });
 
 // ---------------- Self-update check (GitHub) ----------------
@@ -798,3 +1062,7 @@ checkSelfUpdate();
 
 renderLoaderFilterGroup();
 icons();
+
+// Keep the running/stopped badges and the install gate fresh even if the
+// person starts/stops the server in Crafty while this dashboard stays open.
+setInterval(() => { loadSavedServers(); }, 20000);

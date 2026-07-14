@@ -12,6 +12,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import threading
 import time
@@ -57,6 +58,13 @@ PLUGIN_PLATFORMS = {"paper", "purpur", "spigot", "bukkit", "folia"}
 
 HEADERS_UA = {"User-Agent": "anvil-mod-manager/1.0 (+https://github.com/TomCodes-sys/Anvil-Mod-Manager)"}
 
+# Where the Anvil Server Installer mounts Crafty's own "servers" volume on the
+# host (see Anvil Server Installer's bootstrap.sh: -v /opt/crafty/servers:/crafty/servers).
+# Each Crafty server's folder lives at <this>/<crafty_server_id>. Used to turn a
+# Crafty server picked from a dropdown straight into a local path, with zero
+# manual browsing — overridable in Settings for non-default installs.
+CRAFTY_SERVERS_ROOT_DEFAULT = "/opt/crafty/servers"
+
 
 # --------------------------------------------------------------------------
 # Settings (CurseForge API key, saved server profiles)
@@ -68,9 +76,11 @@ def load_settings():
         data.setdefault("crafty_url", "")
         data.setdefault("crafty_token", "")
         data.setdefault("crafty_server_id", "")
+        data.setdefault("crafty_servers_root", CRAFTY_SERVERS_ROOT_DEFAULT)
         return data
     return {"curseforge_api_key": "", "servers": {}, "preview_mode": False,
-            "crafty_url": "", "crafty_token": "", "crafty_server_id": ""}
+            "crafty_url": "", "crafty_token": "", "crafty_server_id": "",
+            "crafty_servers_root": CRAFTY_SERVERS_ROOT_DEFAULT}
 
 
 DEMO_SERVER_PATH = "demo://preview-server"
@@ -93,9 +103,13 @@ def load_server_data(path):
     if f.exists():
         data = json.loads(f.read_text())
         data.setdefault("plugins", [])
+        data.setdefault("crafty_server_id", "")
+        data.setdefault("crafty_server_name", "")
+        data.setdefault("crafty_link_manual", False)
         return data
     return {"server_path": path, "mc_version": "", "loader": "vanilla",
-            "world_name": "world", "mods": [], "datapacks": [], "plugins": []}
+            "world_name": "world", "mods": [], "datapacks": [], "plugins": [],
+            "crafty_server_id": "", "crafty_server_name": "", "crafty_link_manual": False}
 
 
 def save_server_data(path, data):
@@ -227,6 +241,19 @@ def api_servers():
     return jsonify(out)
 
 
+@app.route("/api/servers/status")
+def api_servers_status():
+    """Live running-status for every locally-tracked server that's linked to
+    Crafty — used to badge the quick-switcher and gate downloads. Servers
+    that aren't linked come back with running: null (unknown, not blocked)."""
+    settings = load_settings()
+    out = {}
+    for key, meta in settings.get("servers", {}).items():
+        data = load_server_data(meta["path"])
+        out[meta["path"]] = crafty_running_status(data, settings)
+    return jsonify(out)
+
+
 @app.route("/api/settings/active_server", methods=["GET", "POST"])
 def active_server():
     """Remembers which server was last selected so it's auto-selected again
@@ -275,24 +302,59 @@ def crafty_settings():
         settings["crafty_url"] = body.get("url", settings.get("crafty_url", "")).rstrip("/")
         settings["crafty_token"] = body.get("token", settings.get("crafty_token", ""))
         settings["crafty_server_id"] = body.get("server_id", settings.get("crafty_server_id", ""))
+        settings["crafty_servers_root"] = (body.get("servers_root", settings.get("crafty_servers_root", CRAFTY_SERVERS_ROOT_DEFAULT)) or CRAFTY_SERVERS_ROOT_DEFAULT).rstrip("/")
         save_settings(settings)
         return jsonify({"ok": True})
     return jsonify({
         "url": settings.get("crafty_url", ""),
         "token_set": bool(settings.get("crafty_token")),
         "server_id": settings.get("crafty_server_id", ""),
+        "servers_root": settings.get("crafty_servers_root", CRAFTY_SERVERS_ROOT_DEFAULT),
     })
 
 
-@app.route("/api/crafty/restart", methods=["POST"])
+@app.route("/api/network/local_ip")
+def network_local_ip():
+    """Best-effort local LAN IP of this machine, for auto-filling the Crafty
+    URL field. Opens a UDP socket toward a public address without sending
+    any traffic (UDP connect is just a routing-table lookup) purely to see
+    which local interface/IP the OS would use."""
+    ip = None
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+        finally:
+            s.close()
+    except OSError:
+        pass
+    if not ip or ip.startswith("127."):
+        try:
+            ip = socket.gethostbyname(socket.gethostname())
+        except OSError:
+            ip = None
+    if not ip or ip.startswith("127."):
+        return jsonify({"ok": False, "error": "Couldn't detect a LAN IP automatically — type it in manually."})
+    return jsonify({"ok": True, "ip": ip, "suggested_url": f"https://{ip}:8443"})
+
+
+
 def crafty_restart():
     """Optional hook: triggers a restart through Crafty's own REST API right
     after an install/update, so the change actually takes effect. Requires
-    the Crafty URL/API token/server ID to be set in Settings."""
+    the Crafty URL/API token to be set in Settings, and the target server to
+    be linked to a Crafty server (Saved servers card)."""
+    body = request.json or {}
     settings = load_settings()
-    url, token, server_id = settings.get("crafty_url"), settings.get("crafty_token"), settings.get("crafty_server_id")
+    url, token = settings.get("crafty_url"), settings.get("crafty_token")
+    server_path = body.get("server_path") or settings.get("active_server", "")
+    server_id = None
+    if server_path:
+        server_id = load_server_data(server_path).get("crafty_server_id")
+    server_id = server_id or settings.get("crafty_server_id")  # legacy fallback
     if not (url and token and server_id):
-        return jsonify({"ok": False, "error": "Set your Crafty URL, API token, and server ID in Settings first."}), 400
+        return jsonify({"ok": False, "error": "Set your Crafty URL + API token in Settings, and link this server to a Crafty server first."}), 400
     if settings.get("preview_mode"):
         return jsonify({"ok": True, "preview": True, "note": "Preview mode — restart simulated, Crafty was not contacted."})
     try:
@@ -306,6 +368,239 @@ def crafty_restart():
         return jsonify({"ok": True})
     except requests.RequestException as e:
         return jsonify({"ok": False, "error": f"Couldn't reach Crafty: {e}"}), 502
+
+
+# --------------------------------------------------------------------------
+# Crafty server discovery — lists Crafty's *own* servers (by name, not raw
+# UUID) so each locally-tracked Anvil server can be linked to the right one.
+# That link is what lets us check "is this actually running right now?"
+# before letting mods/plugins/datapacks be downloaded to it.
+# --------------------------------------------------------------------------
+
+def _crafty_configured(settings):
+    return bool(settings.get("crafty_url") and settings.get("crafty_token"))
+
+
+@app.route("/api/crafty/servers")
+def crafty_servers():
+    """Live list of every server Crafty knows about: {id, name, running}.
+    Used to populate the link/override picker and to auto-match local
+    server profiles to their Crafty counterpart by name. Also used directly
+    by the "Pick your server" dropdown on Server Setup — each entry says
+    whether it's already been imported locally and whether its guessed
+    folder actually exists, so the dropdown can be the *entire* setup flow."""
+    settings = load_settings()
+    if not _crafty_configured(settings):
+        return jsonify({"ok": False, "error": "Set your Crafty URL and API token in Settings first.", "servers": []}), 400
+
+    linked_paths = {}
+    for meta in settings.get("servers", {}).values():
+        d = load_server_data(meta["path"])
+        if d.get("crafty_server_id"):
+            linked_paths[d["crafty_server_id"]] = meta["path"]
+
+    if settings.get("preview_mode"):
+        demo = [
+            {"id": "demo-1111", "name": "Survival (preview)", "running": False},
+            {"id": "demo-2222", "name": "Creative Build (preview)", "running": True},
+        ]
+        for s in demo:
+            s["already_added"] = s["id"] in linked_paths
+        return jsonify({"ok": True, "preview": True, "servers": demo})
+
+    url, token = settings["crafty_url"], settings["crafty_token"]
+    try:
+        r = requests.get(f"{url}/api/v2/servers", headers={"Authorization": f"Bearer {token}"},
+                         timeout=15, verify=False)
+        if r.status_code >= 400:
+            return jsonify({"ok": False, "error": f"Crafty returned HTTP {r.status_code}: {r.text[:200]}", "servers": []}), 502
+        body = r.json()
+        servers = body.get("data", []) if isinstance(body, dict) else []
+    except requests.RequestException as e:
+        return jsonify({"ok": False, "error": f"Couldn't reach Crafty: {e}", "servers": []}), 502
+    except ValueError:
+        return jsonify({"ok": False, "error": "Crafty returned something unexpected.", "servers": []}), 502
+
+    root = settings.get("crafty_servers_root", CRAFTY_SERVERS_ROOT_DEFAULT)
+    out = []
+    for s in servers:
+        sid = s.get("server_id") or s.get("server_uuid")
+        if not sid:
+            continue
+        running = None
+        try:
+            sr = requests.get(f"{url}/api/v2/servers/{sid}/stats",
+                               headers={"Authorization": f"Bearer {token}"}, timeout=10, verify=False)
+            if sr.status_code < 400:
+                running = bool(sr.json().get("running"))
+        except (requests.RequestException, ValueError):
+            pass
+        guessed_path = str(Path(root) / sid)
+        out.append({
+            "id": sid,
+            "name": s.get("server_name") or sid,
+            "running": running,
+            "already_added": sid in linked_paths,
+            "existing_path": linked_paths.get(sid),
+            "guessed_path": guessed_path,
+            "path_exists": Path(guessed_path).is_dir(),
+        })
+    return jsonify({"ok": True, "servers": out})
+
+
+@app.route("/api/crafty/select_server", methods=["POST"])
+def crafty_select_server():
+    """The whole "point this at your server" flow, collapsed into one click:
+    given a Crafty server's id + name (from the dropdown on Server Setup),
+    guess its folder from crafty_servers_root, auto-detect version/loader/
+    world the same way manual browsing does, save the profile already
+    linked to that Crafty server, and make it the active one. No folder
+    picking, no separate confirm step — picking it from the dropdown *is*
+    the confirmation. Manual browsing (Advanced) remains for setups that
+    don't follow the default Anvil Server Installer layout."""
+    body = request.json or {}
+    settings = load_settings()
+    if not _crafty_configured(settings):
+        return jsonify({"ok": False, "error": "Set your Crafty URL and API token in Settings first."}), 400
+
+    crafty_id = (body.get("crafty_server_id") or "").strip()
+    crafty_name = (body.get("crafty_server_name") or "").strip()
+    if not crafty_id:
+        return jsonify({"ok": False, "error": "crafty_server_id required"}), 400
+
+    if settings.get("preview_mode"):
+        path = f"demo://crafty-{crafty_id}"
+        data = load_server_data(path)
+        data.update({"server_path": path, "name": crafty_name or crafty_id,
+                      "mc_version": data.get("mc_version") or "1.20.1", "loader": data.get("loader") or "fabric",
+                      "world_name": data.get("world_name") or "world",
+                      "crafty_server_id": crafty_id, "crafty_server_name": crafty_name, "crafty_link_manual": True})
+        save_server_data(path, data)
+        settings["servers"][server_key(path)] = {"path": path, "name": data["name"]}
+        settings["active_server"] = path
+        save_settings(settings)
+        return jsonify({"ok": True, "preview": True, "server": data})
+
+    root = settings.get("crafty_servers_root", CRAFTY_SERVERS_ROOT_DEFAULT)
+    guessed_path = str(Path(root) / crafty_id)
+    p = Path(guessed_path)
+    if not p.is_dir():
+        return jsonify({
+            "ok": False,
+            "error": (f"Expected this server's files at {guessed_path}, but that folder doesn't exist. "
+                      f"If Crafty isn't installed via the Anvil Server Installer's default layout, set the "
+                      f"correct \"Crafty servers folder\" in Settings, or use \"Point at a folder manually\" below."),
+            "guessed_path": guessed_path,
+        }), 400
+
+    data = load_server_data(guessed_path)
+    data.update({
+        "server_path": guessed_path,
+        "name": crafty_name or data.get("name") or p.name,
+        "mc_version": detect_mc_version(p) or data.get("mc_version", ""),
+        "loader": detect_loader(p),
+        "world_name": detect_world_name(p),
+        "crafty_server_id": crafty_id,
+        "crafty_server_name": crafty_name,
+        "crafty_link_manual": True,
+    })
+    save_server_data(guessed_path, data)
+    settings["servers"][server_key(guessed_path)] = {"path": guessed_path, "name": data["name"]}
+    settings["active_server"] = guessed_path
+    save_settings(settings)
+    return jsonify({"ok": True, "server": data})
+
+
+
+
+
+@app.route("/api/crafty/auto_match", methods=["POST"])
+def crafty_auto_match():
+    """Best-effort: for every locally-tracked server that isn't already
+    manually linked, try to match it to a Crafty server by exact
+    (case-insensitive) name. Ambiguous or no match = left alone for the
+    person to pick manually via /api/server/link_crafty."""
+    settings = load_settings()
+    resp = crafty_servers()
+    body = resp[0].get_json() if isinstance(resp, tuple) else resp.get_json()
+    if not body.get("ok"):
+        return jsonify({"ok": False, "error": body.get("error", "Couldn't reach Crafty."), "matched": []}), 400
+
+    crafty_list = body.get("servers", [])
+    by_name = {}
+    for cs in crafty_list:
+        by_name.setdefault(cs["name"].strip().lower(), []).append(cs)
+
+    matched = []
+    for key, meta in settings.get("servers", {}).items():
+        data = load_server_data(meta["path"])
+        if data.get("crafty_link_manual"):
+            continue  # don't clobber an explicit manual choice
+        candidates = by_name.get((data.get("name") or "").strip().lower(), [])
+        if len(candidates) == 1:
+            data["crafty_server_id"] = candidates[0]["id"]
+            data["crafty_server_name"] = candidates[0]["name"]
+            save_server_data(meta["path"], data)
+            matched.append({"server_path": meta["path"], "name": data.get("name"),
+                             "crafty_server_id": candidates[0]["id"], "crafty_server_name": candidates[0]["name"]})
+    return jsonify({"ok": True, "matched": matched, "crafty_servers": crafty_list})
+
+
+@app.route("/api/server/link_crafty", methods=["POST"])
+def link_crafty_server():
+    """Sets (or clears, with an empty crafty_server_id) which real Crafty
+    server a locally-tracked Anvil server profile corresponds to. This is
+    the manual-override path — auto-match (by exact name) happens in
+    api_servers() below and only fills this in when it isn't set yet."""
+    body = request.json or {}
+    path = body.get("server_path", "")
+    if not path:
+        return jsonify({"error": "server_path required"}), 400
+    data = load_server_data(path)
+    data["crafty_server_id"] = body.get("crafty_server_id", "") or ""
+    data["crafty_server_name"] = body.get("crafty_server_name", "") or ""
+    data["crafty_link_manual"] = bool(data["crafty_server_id"])
+    save_server_data(path, data)
+    return jsonify({"ok": True, "server": data})
+
+
+def crafty_running_status(data, settings=None):
+    """Given a loaded server_data dict, returns:
+      {"linked": bool, "crafty_name": str|None, "running": bool|None}
+    running is None when we can't tell (not linked, or Crafty unreachable) —
+    callers should NOT block downloads on an unknown status, only on a
+    confirmed True."""
+    settings = settings or load_settings()
+    crafty_id = data.get("crafty_server_id")
+    if not crafty_id or not _crafty_configured(settings):
+        return {"linked": False, "crafty_name": None, "running": None}
+    if settings.get("preview_mode"):
+        return {"linked": True, "crafty_name": data.get("crafty_server_name") or crafty_id, "running": False}
+    url, token = settings["crafty_url"], settings["crafty_token"]
+    try:
+        r = requests.get(f"{url}/api/v2/servers/{crafty_id}/stats",
+                          headers={"Authorization": f"Bearer {token}"}, timeout=10, verify=False)
+        if r.status_code >= 400:
+            return {"linked": True, "crafty_name": data.get("crafty_server_name") or crafty_id, "running": None}
+        running = bool(r.json().get("running"))
+        return {"linked": True, "crafty_name": data.get("crafty_server_name") or crafty_id, "running": running}
+    except (requests.RequestException, ValueError):
+        return {"linked": True, "crafty_name": data.get("crafty_server_name") or crafty_id, "running": None}
+
+
+def require_server_stopped(server_path, settings=None):
+    """Returns None if it's safe to write mods/plugins/datapacks to this
+    server, or a (message, http_status) tuple to return early if it's
+    confirmed running. Unknown status (not linked, or Crafty unreachable)
+    is allowed through — we only ever block on a *confirmed* running state,
+    never on uncertainty, since plenty of setups don't link Crafty at all."""
+    data = load_server_data(server_path)
+    status = crafty_running_status(data, settings)
+    if status["running"] is True:
+        name = status["crafty_name"] or "this server"
+        return (f"'{name}' is currently running in Crafty. Stop it first, then install/update mods — "
+                f"installing into a live server's mods folder can crash it or corrupt the install."), 409
+    return None
 
 
 @app.route("/api/demo/seed", methods=["POST"])
@@ -689,6 +984,10 @@ def api_install():
     if not mc_version:
         return jsonify({"error": "Set the server's Minecraft version first (Server Setup tab)."}), 400
 
+    block = require_server_stopped(server_path)
+    if block:
+        return jsonify({"error": block[0]}), block[1]
+
     # Real lookup against Modrinth/CurseForge either way, so results are accurate
     # even in preview mode.
     version = resolve_version(source, project_id, mc_version, loader, content_type)
@@ -800,6 +1099,10 @@ def api_update_mod():
     if not item:
         return jsonify({"error": "Not installed"}), 404
 
+    block = require_server_stopped(server_path)
+    if block:
+        return jsonify({"error": block[0]}), block[1]
+
     latest = resolve_version(source, project_id, mc_version, loader if content_type in ("mod", "plugin") else "", content_type)
     if not latest:
         return jsonify({"error": "No compatible version found for the current Minecraft version."}), 404
@@ -846,6 +1149,10 @@ def api_update_all():
     server_path = body["server_path"]
     data = load_server_data(server_path)
     mc_version, loader = data["mc_version"], data["loader"]
+
+    block = require_server_stopped(server_path)
+    if block:
+        return jsonify({"error": block[0]}), block[1]
 
     updated, failed = [], []
     for bucket in ("mods", "plugins", "datapacks"):
@@ -903,6 +1210,10 @@ def api_revert():
     backup = item.get("last_backup")
     if not backup:
         return jsonify({"error": "No backup available for this item yet — backups are only made when Update replaces an existing file."}), 404
+
+    block = require_server_stopped(server_path)
+    if block:
+        return jsonify({"error": block[0]}), block[1]
 
     if not item.get("preview"):
         dest_dir = dest_dir_for(server_path, data, content_type)
@@ -977,6 +1288,10 @@ def modpack_import():
     data = load_server_data(server_path)
     if not data["mc_version"]:
         return jsonify({"error": "Set the server's Minecraft version first (Server Setup tab)."}), 400
+
+    block = require_server_stopped(server_path)
+    if block:
+        return jsonify({"error": block[0]}), block[1]
 
     try:
         raw = _resolve_mrpack_bytes(url=url, upload=upload)
