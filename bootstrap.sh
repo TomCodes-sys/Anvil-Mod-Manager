@@ -77,7 +77,10 @@ echo "[5/5] Starting Anvil Mod Manager..."
 $SUDO systemctl restart anvil-mod-manager
 sleep 2
 
-IP=$(hostname -I | awk '{print $1}')
+IP=$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if ($i=="src") print $(i+1)}')
+if [ -z "$IP" ]; then
+  IP=$(hostname -I | awk '{print $1}')
+fi
 
 echo ""
 echo "=================================================="

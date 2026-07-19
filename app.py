@@ -432,7 +432,7 @@ def crafty_servers():
             sr = requests.get(f"{url}/api/v2/servers/{sid}/stats",
                                headers={"Authorization": f"Bearer {token}"}, timeout=10, verify=False)
             if sr.status_code < 400:
-                running = bool(sr.json().get("running"))
+                running = _extract_running(sr.json())
         except (requests.RequestException, ValueError):
             pass
         guessed_path = str(Path(root) / sid)
@@ -564,6 +564,15 @@ def link_crafty_server():
     return jsonify({"ok": True, "server": data})
 
 
+def _extract_running(stats_json):
+    """Crafty's /stats endpoint wraps its fields under a "data" key
+    (e.g. {"status": "ok", "data": {"running": true, ...}}). Falls back to
+    reading the top level too, in case a future/older Crafty version
+    flattens the response."""
+    payload = stats_json.get("data") if isinstance(stats_json.get("data"), dict) else stats_json
+    return bool(payload.get("running"))
+
+
 def crafty_running_status(data, settings=None):
     """Given a loaded server_data dict, returns:
       {"linked": bool, "crafty_name": str|None, "running": bool|None}
@@ -582,7 +591,8 @@ def crafty_running_status(data, settings=None):
                           headers={"Authorization": f"Bearer {token}"}, timeout=10, verify=False)
         if r.status_code >= 400:
             return {"linked": True, "crafty_name": data.get("crafty_server_name") or crafty_id, "running": None}
-        running = bool(r.json().get("running"))
+        body = r.json()
+        running = _extract_running(body)
         return {"linked": True, "crafty_name": data.get("crafty_server_name") or crafty_id, "running": running}
     except (requests.RequestException, ValueError):
         return {"linked": True, "crafty_name": data.get("crafty_server_name") or crafty_id, "running": None}

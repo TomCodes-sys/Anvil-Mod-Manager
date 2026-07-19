@@ -258,6 +258,9 @@ details.card > .card-row { margin: 0 20px 20px; }
 .server-chip:hover { transform: translateY(-3px); border-color: var(--cyan); }
 .server-chip.active { border-color: var(--green); box-shadow: 0 0 0 1px var(--green); }
 .server-chip.active .server-chip-name { color: var(--green); }
+.server-chip-unimported { border-style: dashed; opacity: 0.7; }
+.server-chip-unimported:hover { opacity: 1; }
+.server-chip.loading { opacity: 0.5; pointer-events: none; }
 .server-chip-name { color: var(--ink); font-weight: 700; font-size: 13px; display: flex; align-items: center; gap: 6px; }
 .server-chip-meta { color: var(--ink-dim); font-size: 11px; }
 

@@ -173,6 +173,16 @@ function applySelectedServer(s) {
   document.getElementById("world-name").value = s.world_name || "world";
   document.getElementById("active-server-label").textContent = `${s.name} — MC ${s.mc_version} / ${s.loader}`;
   updateModpackServerLabel();
+  // Auto-check this server's own MC version in the sidebar filter so search
+  // results are safely narrowed by default — previously this had to be
+  // ticked by hand every time, and forgetting to do so was the easiest way
+  // to install a mod built for the wrong Minecraft version.
+  state.selectedVersions.clear();
+  if (s.mc_version) state.selectedVersions.add(s.mc_version);
+  if (state.allVersions) {
+    const q = document.getElementById("version-search-input").value.trim().toLowerCase();
+    renderVersionChecks(q ? state.allVersions.filter(v => v.toLowerCase().includes(q)) : state.allVersions);
+  }
   fetch("/api/settings/active_server", {
     method: "POST", headers: {"Content-Type": "application/json"},
     body: JSON.stringify({ server_path: s.server_path }),
@@ -237,30 +247,84 @@ function updateDownloadingToBanner() {
 }
 
 async function loadSavedServers() {
-  const res = await fetch("/api/servers");
-  const servers = await res.json();
+  const localRes = await fetch("/api/servers");
+  const localServers = await localRes.json();
   await refreshServerStatuses();
   const row = document.getElementById("saved-servers");
   row.innerHTML = "";
-  servers.forEach(s => {
+
+  // If Crafty is configured, source the list from Crafty directly so every
+  // server Crafty knows about shows up here — not just ones that were
+  // previously walked through the manual detect/save flow. Locally-tracked
+  // servers are merged in for their version/loader info; anything Crafty
+  // knows about that hasn't been imported yet still shows up, just greyed
+  // with an "import" affordance instead of being missing entirely.
+  let craftyList = null;
+  try {
+    const res = await fetch("/api/crafty/servers");
+    const data = await res.json();
+    if (data.ok) craftyList = data.servers;
+  } catch (e) { /* fall through to local-only below */ }
+
+  const byPath = {};
+  localServers.forEach(s => { byPath[s.server_path] = s; });
+
+  const entries = craftyList
+    ? craftyList.map(cs => {
+        const local = cs.existing_path ? byPath[cs.existing_path] : null;
+        return {
+          crafty: cs,
+          local,
+          server_path: local ? local.server_path : null,
+          name: (local && local.name) || cs.name,
+          mc_version: local ? local.mc_version : "",
+          loader: local ? local.loader : "",
+          imported: !!local,
+        };
+      })
+    : localServers.map(s => ({ crafty: null, local: s, server_path: s.server_path, name: s.name, mc_version: s.mc_version, loader: s.loader, imported: true }));
+
+  entries.forEach(e => {
     const chip = document.createElement("div");
-    chip.className = "server-chip" + (state.selectedServer && state.selectedServer.server_path === s.server_path ? " active" : "");
+    chip.className = "server-chip"
+      + (state.selectedServer && e.server_path && state.selectedServer.server_path === e.server_path ? " active" : "")
+      + (e.imported ? "" : " server-chip-unimported");
     const name = document.createElement("span");
     name.className = "server-chip-name";
-    const status = state.serverStatuses[s.server_path];
+    const status = e.imported ? state.serverStatuses[e.server_path] : (e.crafty ? { linked: true, running: e.crafty.running } : null);
     const dot = document.createElement("span");
     dot.className = "status-dot " + statusDotClass(status);
-    dot.title = statusLabel(status);
+    dot.title = status ? statusLabel(status) : "not imported yet";
     name.appendChild(dot);
-    name.appendChild(document.createTextNode(s.name || s.server_path));
+    name.appendChild(document.createTextNode(e.name || e.server_path || "unnamed"));
     const meta = document.createElement("span");
     meta.className = "server-chip-meta";
-    meta.textContent = s.mc_version ? `MC ${s.mc_version} · ${s.loader || "vanilla"}` : "no version set";
+    meta.textContent = e.imported
+      ? (e.mc_version ? `MC ${e.mc_version} · ${e.loader || "vanilla"}` : "no version set")
+      : "click to import from Crafty";
     chip.appendChild(name);
     chip.appendChild(meta);
-    chip.addEventListener("click", () => {
-      applySelectedServer(s);
-      loadSavedServers();
+    chip.addEventListener("click", async () => {
+      if (e.imported) {
+        applySelectedServer(e.local);
+        loadSavedServers();
+      } else if (e.crafty) {
+        chip.classList.add("loading");
+        try {
+          const res = await fetch("/api/crafty/select_server", {
+            method: "POST", headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({ crafty_server_id: e.crafty.id, crafty_server_name: e.crafty.name }),
+          });
+          const data = await res.json();
+          if (data.ok) {
+            applySelectedServer(data.server);
+          } else {
+            alert(data.error || "Couldn't import this server.");
+          }
+        } finally {
+          loadSavedServers();
+        }
+      }
     });
     row.appendChild(chip);
   });
@@ -978,6 +1042,19 @@ document.getElementById("btn-save-key").addEventListener("click", async () => {
   document.getElementById("crafty-url").value = data.url || "";
   document.getElementById("crafty-token").placeholder = data.token_set ? "(saved — leave blank to keep)" : "paste token here";
   document.getElementById("crafty-servers-root").value = data.servers_root || "/opt/crafty/servers";
+  // Crafty always runs on this same box in the standard Anvil setup, so
+  // auto-fill the URL the moment Settings loads if nothing's saved yet —
+  // one less manual step.
+  if (!data.url) {
+    try {
+      const ipRes = await fetch("/api/network/local_ip");
+      const ipData = await ipRes.json();
+      if (ipData.ok) {
+        document.getElementById("crafty-url").value = ipData.suggested_url;
+        document.getElementById("crafty-settings-status").textContent = `Detected ${ipData.ip} — double-check this is the machine running Crafty, then save.`;
+      }
+    } catch (e) { /* silent — Auto-detect button still works manually */ }
+  }
 })();
 document.getElementById("btn-save-crafty").addEventListener("click", async () => {
   const url = document.getElementById("crafty-url").value.trim();
