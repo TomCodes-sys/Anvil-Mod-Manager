@@ -1,3 +1,29 @@
+// ---------------- Toasts ----------------
+// Lightweight, dependency-free toast notifications. Used for errors/results
+// from actions that don't have one obvious inline status line nearby (e.g.
+// "Install" on a result card, "Update all"), so failures are never silent
+// and never a blocking alert() popup.
+function toast(message, type = "error", duration = 6000) {
+  const stack = document.getElementById("toast-stack");
+  if (!stack) { console.warn("toast:", message); return; }
+  const el = document.createElement("div");
+  el.className = `toast ${type}`;
+  const iconName = type === "error" ? "circle-alert" : type === "success" ? "circle-check" : "info";
+  el.innerHTML = `<i data-lucide="${iconName}" class="toast-icon" style="width:16px;height:16px;"></i>
+    <div class="toast-body"></div>
+    <button class="toast-close" aria-label="Dismiss"><i data-lucide="x" style="width:14px;height:14px;"></i></button>`;
+  el.querySelector(".toast-body").textContent = message;
+  const remove = () => {
+    el.classList.add("leaving");
+    setTimeout(() => el.remove(), 200);
+  };
+  el.querySelector(".toast-close").addEventListener("click", remove);
+  stack.appendChild(el);
+  icons();
+  if (duration) setTimeout(remove, duration);
+  return el;
+}
+
 const MOD_LOADERS = [
   { id: "fabric", label: "Fabric" },
   { id: "quilt", label: "Quilt" },
@@ -138,9 +164,20 @@ async function selectServerFolder(path) {
   document.getElementById("mc-version").value = info.mc_version || "";
   document.getElementById("loader-select").value = info.loader || "vanilla";
   document.getElementById("world-name").value = info.world_name || "world";
-  document.getElementById("detect-hint").textContent = info.mc_version
-    ? `Detected Minecraft ${info.mc_version}, loader/platform: ${info.loader}. Double-check before saving.`
-    : `Couldn't auto-detect the version — please enter it manually.`;
+  document.getElementById("detect-hint").textContent = mcVersionHint(info.mc_version, info.mc_version_source, info.loader);
+}
+
+// Turns a detected mc_version + its source into an honest status line — the
+// "guess" source (a version-shaped number pulled from a jar filename, used as
+// a last resort for Forge/NeoForge setups that don't embed version.json) gets
+// called out explicitly so it isn't trusted the same as a solid detection.
+function mcVersionHint(mcVersion, source, loader) {
+  if (!mcVersion) return "Couldn't auto-detect the version — please enter it manually.";
+  if (source === "guess") {
+    return `Best guess: Minecraft ${mcVersion} (read from a jar filename — Forge/NeoForge don't expose this as ` +
+      `reliably as other loaders). Loader/platform: ${loader}. Please confirm this is correct before saving.`;
+  }
+  return `Detected Minecraft ${mcVersion}, loader/platform: ${loader}. Double-check before saving.`;
 }
 
 document.getElementById("btn-save-config").addEventListener("click", async () => {
@@ -319,7 +356,7 @@ async function loadSavedServers() {
           if (data.ok) {
             applySelectedServer(data.server);
           } else {
-            alert(data.error || "Couldn't import this server.");
+            toast(data.error || "Couldn't import this server.");
           }
         } finally {
           loadSavedServers();
@@ -481,7 +518,12 @@ document.getElementById("crafty-pick-select")?.addEventListener("change", async 
       return;
     }
     status.classList.remove("error");
-    status.textContent = `Ready — ${data.server.name} on Minecraft ${data.server.mc_version || "?"} (${data.server.loader}).`;
+    status.textContent = data.server.mc_version
+      ? mcVersionHint(data.server.mc_version, data.server.mc_version_source, data.server.loader)
+      : `Ready — ${data.server.name}, but the version couldn't be auto-detected. Enter it manually below.`;
+    if (data.server.mc_version_source === "guess") {
+      toast(`Minecraft version for ${data.server.name} is a best guess (${data.server.mc_version}) — please confirm it in Server Setup before installing mods.`, "info", 9000);
+    }
     applySelectedServer(data.server);
     await loadSavedServers();
     await loadCraftyPicker();
@@ -560,7 +602,12 @@ function renderLoaderFilterGroup() {
 // ---------------- Game version filter (sidebar) ----------------
 async function loadGameVersions() {
   const res = await fetch("/api/game_versions");
-  state.allVersions = await res.json();
+  const data = await res.json();
+  state.allVersions = Array.isArray(data) ? data : [];
+  if (!Array.isArray(data) && data.error) {
+    document.getElementById("search-status").textContent = data.error;
+    document.getElementById("search-status").classList.add("error");
+  }
   renderVersionChecks(state.allVersions);
 }
 function renderVersionChecks(versions) {
@@ -760,6 +807,7 @@ async function installItem(r, btn) {
   if (data.error) {
     btn.textContent = "Failed";
     btn.title = data.error;
+    toast(data.error);
     setTimeout(() => { btn.disabled = false; btn.textContent = "Install"; }, 2200);
     return;
   }
@@ -842,28 +890,71 @@ function renderInstalledList(elId, items, statuses) {
   icons();
 }
 
-document.getElementById("btn-check-updates").addEventListener("click", async () => {
+async function runCheckUpdates(only) {
   const statusEl = document.getElementById("update-status");
-  statusEl.textContent = "Checking every installed mod, plugin and datapack against the current server version...";
+  const retryBtn = document.getElementById("btn-retry-failed");
+  if (!only) statusEl.textContent = "Checking every installed mod, plugin and datapack against the current server version...";
   const res = await fetch("/api/check_updates", {
     method: "POST", headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({ server_path: state.selectedServer.server_path }),
+    body: JSON.stringify(only
+      ? { server_path: state.selectedServer.server_path, only }
+      : { server_path: state.selectedServer.server_path }),
   });
   const data = await res.json();
-  state.lastCheckedResults = data.results;
-  const mods = data.results.filter(r => r.type === "mod");
-  const plugins = data.results.filter(r => r.type === "plugin");
-  const datapacks = data.results.filter(r => r.type === "datapack");
-  renderInstalledList("installed-mods", mods, data.results);
-  renderInstalledList("installed-plugins", plugins, data.results);
-  renderInstalledList("installed-datapacks", datapacks, data.results);
-  const updates = data.results.filter(r => r.status === "update_available").length;
-  const stuck = data.results.filter(r => r.status === "no_compatible_version").length;
-  const conflicts = data.results.filter(r => r.conflicts && r.conflicts.length).length;
+
+  if (only) {
+    // Partial re-check (a retry): merge the re-checked entries back into the
+    // last full result set rather than replacing it, so items that weren't
+    // part of this retry keep showing their previous status.
+    const merged = new Map(state.lastCheckedResults.map(r => [`${r.source}:${r.project_id}`, r]));
+    data.results.forEach(r => merged.set(`${r.source}:${r.project_id}`, r));
+    state.lastCheckedResults = [...merged.values()];
+  } else {
+    state.lastCheckedResults = data.results;
+  }
+
+  const allResults = state.lastCheckedResults;
+  const mods = allResults.filter(r => r.type === "mod");
+  const plugins = allResults.filter(r => r.type === "plugin");
+  const datapacks = allResults.filter(r => r.type === "datapack");
+  renderInstalledList("installed-mods", mods, allResults);
+  renderInstalledList("installed-plugins", plugins, allResults);
+  renderInstalledList("installed-datapacks", datapacks, allResults);
+
+  const updates = allResults.filter(r => r.status === "update_available").length;
+  const stuck = allResults.filter(r => r.status === "no_compatible_version").length;
+  const failed = allResults.filter(r => r.status === "check_failed");
+  const conflicts = allResults.filter(r => r.conflicts && r.conflicts.length).length;
   statusEl.textContent = `${updates} update${updates === 1 ? "" : "s"} available. ` +
-    (stuck ? `${stuck} item${stuck === 1 ? "" : "s"} have no build for Minecraft ${data.mc_version} yet. ` : "") +
-    (conflicts ? `${conflicts} known conflict${conflicts === 1 ? "" : "s"} flagged.` : (stuck ? "" : "Everything else has a matching build."));
+    (stuck ? `${stuck} item${stuck === 1 ? "" : "s"} have no build for Minecraft ${data.mc_version || state.selectedServer.mc_version} yet. ` : "") +
+    (failed.length ? `${failed.length} item${failed.length === 1 ? "" : "s"} couldn't be checked. ` : "") +
+    (conflicts ? `${conflicts} known conflict${conflicts === 1 ? "" : "s"} flagged.` : (stuck || failed.length ? "" : "Everything else has a matching build."));
   document.getElementById("btn-update-all").style.display = updates > 0 ? "inline-flex" : "none";
+
+  state.lastFailedItems = failed.map(f => ({ source: f.source, project_id: f.project_id }));
+  retryBtn.style.display = failed.length ? "inline-flex" : "none";
+  retryBtn.innerHTML = `<i data-lucide="rotate-ccw"></i>Retry failed items (${failed.length})`;
+  icons();
+
+  if (only) {
+    const stillFailing = data.results.filter(r => r.status === "check_failed").length;
+    if (stillFailing === 0) toast(`Rechecked ${data.results.length} item${data.results.length === 1 ? "" : "s"} — all clear now.`, "success");
+    else toast(`Rechecked ${data.results.length} item${data.results.length === 1 ? "" : "s"} — ${stillFailing} still couldn't be reached.`);
+  } else if (failed.length) {
+    toast(`${failed.length} item${failed.length === 1 ? "" : "s"} couldn't be checked (network issue) — click "Retry failed items" to try again.`);
+  }
+}
+
+document.getElementById("btn-check-updates").addEventListener("click", () => runCheckUpdates());
+document.getElementById("btn-retry-failed").addEventListener("click", async (e) => {
+  const btn = e.currentTarget;
+  if (!state.lastFailedItems || !state.lastFailedItems.length) return;
+  btn.disabled = true;
+  const label = btn.innerHTML;
+  btn.innerHTML = `<i data-lucide="loader-2" class="spin"></i>Retrying...`;
+  icons();
+  await runCheckUpdates(state.lastFailedItems);
+  btn.disabled = false;
 });
 
 document.getElementById("btn-update-all").addEventListener("click", async (e) => {
@@ -1018,7 +1109,7 @@ document.getElementById("btn-modpack-import").addEventListener("click", async ()
 });
 
 document.getElementById("btn-modpack-export").addEventListener("click", () => {
-  if (!state.selectedServer) { alert("Select a server in Server Setup first."); return; }
+  if (!state.selectedServer) { toast("Select a server in Server Setup first.", "info"); return; }
   const params = new URLSearchParams({ server_path: state.selectedServer.server_path });
   window.location.href = `/api/modpack/export?${params}`;
 });
@@ -1118,7 +1209,7 @@ async function applySelfUpdate() {
     } else {
       btn.disabled = false;
       btn.textContent = "Update now";
-      alert(data.error || "Update failed.");
+      toast(data.error || "Update failed.");
     }
   } catch (e) {
     btn.disabled = false;
@@ -1143,3 +1234,28 @@ icons();
 // Keep the running/stopped badges and the install gate fresh even if the
 // person starts/stops the server in Crafty while this dashboard stays open.
 setInterval(() => { loadSavedServers(); }, 20000);
+
+// ---------------- Topbar Crafty health dot ----------------
+async function loadCraftyHealth() {
+  const dot = document.getElementById("dot-crafty-health");
+  const wrap = document.getElementById("crafty-health");
+  if (!dot) return;
+  try {
+    const res = await fetch("/api/crafty/health");
+    const data = await res.json();
+    if (!data.configured) {
+      dot.className = "link-dot dot-grey";
+      wrap.title = "Crafty isn't connected yet — set it up in Settings.";
+    } else if (data.reachable) {
+      dot.className = "link-dot dot-green";
+      wrap.title = data.preview ? "Crafty connection OK (preview mode)." : "Connected to Crafty.";
+    } else {
+      dot.className = "link-dot dot-red";
+      wrap.title = "Crafty is configured but not reachable right now.";
+    }
+  } catch (e) {
+    dot.className = "link-dot dot-red";
+  }
+}
+loadCraftyHealth();
+setInterval(loadCraftyHealth, 20000);

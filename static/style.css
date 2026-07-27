@@ -431,6 +431,7 @@ details.card > .card-row { margin: 0 20px 20px; }
 .status-pill.up_to_date { background: var(--green); }
 .status-pill.update_available { background: var(--amber); }
 .status-pill.no_compatible_version { background: var(--red); }
+.status-pill.check_failed { background: var(--ink-dim); animation: pulse-dot 1.6s ease-in-out infinite; }
 .status-pill.unknown { background: var(--ink-dim); }
 .status-message { color: var(--ink-dim); }
 .installed-actions { display: flex; gap: 8px; }
@@ -513,3 +514,39 @@ input[type=file] {
   line-height: 1.6; font-family: var(--font-mono); font-size: 12px;
 }
 .modal-actions { display: flex; justify-content: flex-end; gap: 10px; padding: 14px 20px; border-top: 1px solid var(--line); }
+
+/* ---------------- Toasts ---------------- */
+.toast-stack {
+  position: fixed; bottom: 20px; right: 20px; z-index: 1000;
+  display: flex; flex-direction: column; gap: 10px; max-width: 380px;
+}
+.toast {
+  display: flex; align-items: flex-start; gap: 10px;
+  background: var(--bg-card); border: 1px solid var(--line); border-left: 3px solid var(--ink-dim);
+  border-radius: 10px; padding: 12px 14px; box-shadow: 0 12px 30px rgba(0,0,0,0.4);
+  font-size: 12.5px; color: var(--ink); animation: toast-in .25s var(--spring);
+}
+.toast.leaving { animation: toast-out .18s ease-in forwards; }
+.toast-icon { flex: none; margin-top: 1px; }
+.toast-body { flex: 1; line-height: 1.45; }
+.toast-close { background: none; border: none; color: var(--ink-faint); cursor: pointer; padding: 0; flex: none; }
+.toast-close:hover { color: var(--ink); }
+.toast.error { border-left-color: var(--red); }
+.toast.error .toast-icon { color: var(--red); }
+.toast.success { border-left-color: var(--green); }
+.toast.success .toast-icon { color: var(--green); }
+.toast.info { border-left-color: var(--cyan, #4da6ff); }
+@keyframes toast-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes toast-out { to { opacity: 0; transform: translateX(20px); } }
+@keyframes pulse-dot { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+/* Crafty health dot in the topbar (mirrors the same pattern used in Anvil
+   Server Installer / Anvil Server Manager for cross-app links). */
+.topbar-health { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; color: var(--ink-dim); margin-left: 14px; }
+.topbar-health .link-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ink-faint); }
+.topbar-health .link-dot.dot-green { background: var(--green); box-shadow: 0 0 6px var(--green-dim); }
+.topbar-health .link-dot.dot-red { background: var(--red); box-shadow: 0 0 6px rgba(255,92,92,0.4); }
+.topbar-health .link-dot.dot-grey { background: var(--ink-faint); }
+
+.spin { animation: spin-anim 0.9s linear infinite; }
+@keyframes spin-anim { to { transform: rotate(360deg); } }

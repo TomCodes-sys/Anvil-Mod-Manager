@@ -26,6 +26,9 @@
       <button class="tab" data-tab="modpack"><i data-lucide="boxes"></i>Modpack</button>
       <button class="tab" data-tab="settings"><i data-lucide="settings"></i>Settings</button>
     </nav>
+    <span class="topbar-health" id="crafty-health" title="Crafty connection status">
+      <span class="link-dot" id="dot-crafty-health"></span>Crafty
+    </span>
   </header>
 
   <div class="preview-banner" id="preview-banner" style="display:none">
@@ -227,6 +230,7 @@
       <div class="installed-actions-row">
         <button id="btn-check-updates" class="btn-primary"><i data-lucide="refresh-cw"></i>Check for updates</button>
         <button id="btn-update-all" class="btn-secondary" style="display:none"><i data-lucide="download"></i>Update all</button>
+        <button id="btn-retry-failed" class="btn-ghost" style="display:none"><i data-lucide="rotate-ccw"></i>Retry failed items</button>
         <button id="btn-restart-server" class="btn-ghost" title="Restart the server through Crafty's API"><i data-lucide="power"></i>Restart server</button>
       </div>
       <p class="status-line" id="update-status"></p>
@@ -392,6 +396,8 @@
     </div>
   </article>
 </template>
+
+<div class="toast-stack" id="toast-stack" aria-live="polite"></div>
 
 <script src="/static/app.js"></script>
 </body>

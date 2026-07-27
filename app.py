@@ -42,8 +42,14 @@ INSTALL_DIR = Path(__file__).parent
 LOADER_MARKERS = {
     "fabric": ["fabric-server-launch.jar", "libraries/net/fabricmc", ".fabric-installer"],
     "quilt": ["quilt-server-launch.jar", "libraries/org/quiltmc"],
-    "forge": ["libraries/net/minecraftforge", "run.sh", "forge-installer"],
+    # neoforge is checked before forge: NeoForge servers ship the exact same
+    # run.sh launch script Forge does (it's a fork of Forge's tooling), so if
+    # forge's markers included anything that ambiguous, a NeoForge server
+    # would get misidentified as Forge before this line is ever reached.
+    # Forge and NeoForge builds are NOT interchangeable on Modrinth/CurseForge,
+    # so getting this wrong means silently offering mods that won't load.
     "neoforge": ["libraries/net/neoforged"],
+    "forge": ["libraries/net/minecraftforge", "forge-installer"],
     "paper": ["libraries/io/papermc/paper"],
     "purpur": ["purpur.jar", "libraries/org/purpurmc"],
     "spigot": ["spigot.jar", "libraries/org/spigotmc"],
@@ -57,6 +63,16 @@ MOD_LOADERS = {"fabric", "quilt", "forge", "neoforge"}
 PLUGIN_PLATFORMS = {"paper", "purpur", "spigot", "bukkit", "folia"}
 
 HEADERS_UA = {"User-Agent": "anvil-mod-manager/1.0 (+https://github.com/TomCodes-sys/Anvil-Mod-Manager)"}
+
+
+class LookupUnavailable(Exception):
+    """Raised when a Modrinth/CurseForge version lookup couldn't be completed
+    at all (network error, timeout, rate limit) — distinct from the lookup
+    succeeding and simply finding no compatible build. Check for Updates uses
+    this to mark an item 'check_failed' (retryable) instead of lumping it in
+    with 'no_compatible_version' (which means "nothing exists for this MC
+    version," a permanent state that a retry won't fix)."""
+    pass
 
 # Where the Anvil Server Installer mounts Crafty's own "servers" volume on the
 # host (see Anvil Server Installer's bootstrap.sh: -v /opt/crafty/servers:/crafty/servers).
@@ -106,8 +122,9 @@ def load_server_data(path):
         data.setdefault("crafty_server_id", "")
         data.setdefault("crafty_server_name", "")
         data.setdefault("crafty_link_manual", False)
+        data.setdefault("mc_version_source", "")
         return data
-    return {"server_path": path, "mc_version": "", "loader": "vanilla",
+    return {"server_path": path, "mc_version": "", "mc_version_source": "", "loader": "vanilla",
             "world_name": "world", "mods": [], "datapacks": [], "plugins": [],
             "crafty_server_id": "", "crafty_server_name": "", "crafty_link_manual": False}
 
@@ -164,24 +181,57 @@ def detect_loader(server_path: Path):
     return "vanilla"
 
 
+_VERSION_RE = re.compile(r"\b(1\.\d{1,2}(?:\.\d{1,2})?)\b")
+
+
 def detect_mc_version(server_path: Path):
-    # Try every jar in the root; vanilla/modded server jars often embed version.json
+    """Returns (version, source). source is one of:
+      "jar"     — read straight out of an embedded version.json (highest confidence;
+                  covers vanilla, Paper, Purpur, Spigot, Bukkit, Folia, and Fabric/Quilt
+                  setups that keep the plain vanilla server.jar alongside the loader jar)
+      "forge"   — read from Forge/NeoForge's own libraries/net/minecraft/server/<version>
+                  folder, which their installers always create — this is what makes
+                  Forge/NeoForge detection work at all, since their launch jar doesn't
+                  embed version.json itself
+      "guess"   — a version-shaped number pulled out of a jar filename (e.g.
+                  forge-1.20.1-47.2.20-installer.jar); lowest confidence of the three,
+                  flagged as such so the UI can tell the person to double-check it
+      ""        — nothing found; falls back to whatever's already saved, or blank
+    """
+    # 1) Embedded version.json — the reliable case.
     for jar in server_path.glob("*.jar"):
         try:
             with zipfile.ZipFile(jar) as z:
                 if "version.json" in z.namelist():
                     info = json.loads(z.read("version.json"))
                     if info.get("id"):
-                        return info["id"]
-        except (zipfile.BadZipFile, KeyError):
+                        return info["id"], "jar"
+        except (zipfile.BadZipFile, KeyError, json.JSONDecodeError):
             continue
-    # Fabric/Quilt/Forge installers sometimes leave a clue in a log or properties file
-    for name in ("server.properties",):
-        f = server_path / name
-        if f.exists():
-            text = f.read_text(errors="ignore")
-            m = re.search(r"level-seed|motd", text)  # no reliable version field here
-    return ""
+
+    # 2) Forge/NeoForge: their installer lays down
+    #    libraries/net/minecraft/server/<mc_version>/... every time, regardless of
+    #    Forge/NeoForge version, since it's just the vanilla server jar they patch
+    #    against. This is far more reliable than trying to parse it out of the
+    #    Forge jar's own filename (whose version numbering doesn't match MC's).
+    mc_server_libs = server_path / "libraries" / "net" / "minecraft" / "server"
+    if mc_server_libs.is_dir():
+        candidates = [d.name for d in mc_server_libs.iterdir() if d.is_dir() and _VERSION_RE.fullmatch(d.name)]
+        if candidates:
+            candidates.sort(key=lambda v: [int(x) for x in v.split(".")], reverse=True)
+            return candidates[0], "forge"
+
+    # 3) Last resort: a version-shaped number in a jar filename in the root
+    #    (e.g. "forge-1.20.1-47.2.20-installer.jar", "paper-1.20.1-196.jar"). Loosely
+    #    confident at best — flagged to the caller as "guess" so the UI can show it
+    #    as unverified rather than presenting it with the same confidence as the two
+    #    checks above.
+    for jar in sorted(server_path.glob("*.jar")):
+        m = _VERSION_RE.search(jar.name)
+        if m:
+            return m.group(1), "guess"
+
+    return "", ""
 
 
 def detect_world_name(server_path: Path):
@@ -200,8 +250,10 @@ def api_detect():
     p = Path(path)
     if not p.exists():
         return jsonify({"error": "Path not found"}), 400
+    mc_version, mc_version_source = detect_mc_version(p)
     return jsonify({
-        "mc_version": detect_mc_version(p),
+        "mc_version": mc_version,
+        "mc_version_source": mc_version_source,
         "loader": detect_loader(p),
         "world_name": detect_world_name(p),
         "has_mods_folder": (p / "mods").exists(),
@@ -217,6 +269,7 @@ def api_server_config():
         data.update({
             "server_path": path,
             "mc_version": body.get("mc_version", data["mc_version"]),
+            "mc_version_source": "confirmed" if body.get("mc_version") else data.get("mc_version_source", ""),
             "loader": body.get("loader", data["loader"]),
             "world_name": body.get("world_name", data.get("world_name", "world")),
             "name": body.get("name", data.get("name", Path(path).name)),
@@ -381,6 +434,25 @@ def _crafty_configured(settings):
     return bool(settings.get("crafty_url") and settings.get("crafty_token"))
 
 
+@app.route("/api/crafty/health")
+def crafty_health():
+    """Lightweight reachability check for the topbar health dot — separate
+    from /api/crafty/servers (below) so polling it every 20s doesn't also
+    pull the full server list and stats for every server each time."""
+    settings = load_settings()
+    if not _crafty_configured(settings):
+        return jsonify({"configured": False, "reachable": False})
+    if settings.get("preview_mode"):
+        return jsonify({"configured": True, "reachable": True, "preview": True})
+    url, token = settings["crafty_url"], settings["crafty_token"]
+    try:
+        r = requests.get(f"{url}/api/v2/servers", headers={"Authorization": f"Bearer {token}"},
+                          timeout=6, verify=False)
+        return jsonify({"configured": True, "reachable": r.status_code < 400})
+    except requests.RequestException:
+        return jsonify({"configured": True, "reachable": False})
+
+
 @app.route("/api/crafty/servers")
 def crafty_servers():
     """Live list of every server Crafty knows about: {id, name, running}.
@@ -494,10 +566,12 @@ def crafty_select_server():
         }), 400
 
     data = load_server_data(guessed_path)
+    detected_version, detected_source = detect_mc_version(p)
     data.update({
         "server_path": guessed_path,
         "name": crafty_name or data.get("name") or p.name,
-        "mc_version": detect_mc_version(p) or data.get("mc_version", ""),
+        "mc_version": detected_version or data.get("mc_version", ""),
+        "mc_version_source": detected_source if detected_version else "",
         "loader": detect_loader(p),
         "world_name": detect_world_name(p),
         "crafty_server_id": crafty_id,
@@ -732,14 +806,18 @@ def api_search():
     loaders = [l for l in request.args.get("loaders", "").split(",") if l]
     offset = int(request.args.get("offset", 0))
 
-    if source == "modrinth":
-        return jsonify(search_modrinth(query, content_type, mc_version, loaders, offset))
-    elif source == "curseforge":
-        if content_type != "mod":
-            return jsonify({"results": [], "total": 0,
-                             "note": f"CurseForge search here only covers mods; use Modrinth for {content_type}s."})
-        return jsonify(search_curseforge(query, mc_version, loaders[0] if loaders else "", offset))
-    return jsonify({"error": "unknown source"}), 400
+    try:
+        if source == "modrinth":
+            return jsonify(search_modrinth(query, content_type, mc_version, loaders, offset))
+        elif source == "curseforge":
+            if content_type != "mod":
+                return jsonify({"results": [], "total": 0,
+                                 "note": f"CurseForge search here only covers mods; use Modrinth for {content_type}s."})
+            return jsonify(search_curseforge(query, mc_version, loaders[0] if loaders else "", offset))
+        return jsonify({"error": "unknown source"}), 400
+    except requests.RequestException as e:
+        return jsonify({"results": [], "total": 0,
+                         "error": f"Couldn't reach {source.title()} right now: {e}"}), 502
 
 
 @app.route("/api/game_versions")
@@ -747,9 +825,12 @@ def api_game_versions():
     """Minecraft versions for the sidebar filter, straight from Modrinth's
     tag list. Releases only unless ?all=1 is passed (snapshots/betas)."""
     show_all = request.args.get("all") == "1"
-    r = requests.get(f"{MODRINTH_API}/tag/game_version", headers=HEADERS_UA, timeout=20)
-    r.raise_for_status()
-    versions = r.json()
+    try:
+        r = requests.get(f"{MODRINTH_API}/tag/game_version", headers=HEADERS_UA, timeout=20)
+        r.raise_for_status()
+        versions = r.json()
+    except (requests.RequestException, ValueError) as e:
+        return jsonify({"error": f"Couldn't reach Modrinth for the version list: {e}"}), 502
     if not show_all:
         versions = [v for v in versions if v.get("version_type") == "release"]
     return jsonify([v["version"] for v in versions])
@@ -836,10 +917,13 @@ def modrinth_best_version(project_id, mc_version, loader, content_type):
     params = {"game_versions": json.dumps([mc_version])}
     if content_type in ("mod", "plugin") and loader and loader != "vanilla":
         params["loaders"] = json.dumps([loader])
-    r = requests.get(f"{MODRINTH_API}/project/{project_id}/version", params=params,
-                      headers=HEADERS_UA, timeout=20)
-    r.raise_for_status()
-    versions = r.json()
+    try:
+        r = requests.get(f"{MODRINTH_API}/project/{project_id}/version", params=params,
+                          headers=HEADERS_UA, timeout=20)
+        r.raise_for_status()
+        versions = r.json()
+    except (requests.RequestException, ValueError) as e:
+        raise LookupUnavailable(str(e))
     if not versions:
         return None
     versions.sort(key=lambda v: v.get("date_published", ""), reverse=True)
@@ -863,11 +947,14 @@ def curseforge_best_version(project_id, mc_version, loader):
     loader_map = {"forge": 1, "fabric": 4, "quilt": 5, "neoforge": 6}
     if loader in loader_map:
         params["modLoaderType"] = loader_map[loader]
-    r = requests.get(f"{CURSEFORGE_API}/mods/{project_id}/files", params=params,
-                      headers=headers, timeout=20)
-    if r.status_code != 200:
-        return None
-    files = r.json().get("data", [])
+    try:
+        r = requests.get(f"{CURSEFORGE_API}/mods/{project_id}/files", params=params,
+                          headers=headers, timeout=20)
+        if r.status_code != 200:
+            return None
+        files = r.json().get("data", [])
+    except (requests.RequestException, ValueError) as e:
+        raise LookupUnavailable(str(e))
     if not files:
         return None
     files.sort(key=lambda f: f.get("fileDate", ""), reverse=True)
@@ -1000,7 +1087,10 @@ def api_install():
 
     # Real lookup against Modrinth/CurseForge either way, so results are accurate
     # even in preview mode.
-    version = resolve_version(source, project_id, mc_version, loader, content_type)
+    try:
+        version = resolve_version(source, project_id, mc_version, loader, content_type)
+    except LookupUnavailable as e:
+        return jsonify({"error": f"Couldn't reach {source.title()} to look up {title}: {e}"}), 502
     if not version or not version.get("download_url"):
         return jsonify({"error": f"No {source} file found for {title} on Minecraft {mc_version}"
                                   f"{' / ' + loader if content_type in ('mod', 'plugin') else ''}."}), 404
@@ -1010,8 +1100,11 @@ def api_install():
         dest_dir = dest_dir_for(server_path, data, content_type)
         dest_dir.mkdir(parents=True, exist_ok=True)
         dest_file = dest_dir / version["file_name"]
-        r = requests.get(version["download_url"], headers=HEADERS_UA, timeout=60)
-        r.raise_for_status()
+        try:
+            r = requests.get(version["download_url"], headers=HEADERS_UA, timeout=60)
+            r.raise_for_status()
+        except requests.RequestException as e:
+            return jsonify({"error": f"Couldn't download {title}: {e}"}), 502
         dest_file.write_bytes(r.content)
 
     entry = {
@@ -1047,6 +1140,13 @@ def api_installed():
 def api_check_updates():
     body = request.json
     server_path = body["server_path"]
+    # Optional: [{"source":..., "project_id":...}, ...] to re-check only these
+    # items (used by the "Retry failed items" button) instead of the whole
+    # installed list — avoids re-hitting Modrinth/CurseForge for everything
+    # that already checked out fine.
+    only = body.get("only")
+    only_keys = {(o["source"], o["project_id"]) for o in only} if only else None
+
     data = load_server_data(server_path)
     mc_version, loader = data["mc_version"], data["loader"]
     results = []
@@ -1062,6 +1162,8 @@ def api_check_updates():
     for _, item in all_items:
         if item["source"] != "curseforge":
             continue
+        if only_keys is not None and (item["source"], item["project_id"]) not in only_keys:
+            continue
         deps = curseforge_file_dependencies(item["project_id"], item["version_id"])
         incompatible_ids = {str(d.get("modId")) for d in deps if d.get("relationType") == 5}
         hit = incompatible_ids & installed_cf_ids
@@ -1071,8 +1173,20 @@ def api_check_updates():
 
     for bucket in ("mods", "plugins", "datapacks"):
         for item in data[bucket]:
-            latest = resolve_version(item["source"], item["project_id"], mc_version,
-                                      loader if item["type"] in ("mod", "plugin") else "", item["type"])
+            if only_keys is not None and (item["source"], item["project_id"]) not in only_keys:
+                continue
+            try:
+                latest = resolve_version(item["source"], item["project_id"], mc_version,
+                                          loader if item["type"] in ("mod", "plugin") else "", item["type"])
+            except LookupUnavailable as e:
+                # The lookup itself failed (network/rate-limit/timeout) — this
+                # is retryable, unlike "no_compatible_version" below, which
+                # means the lookup succeeded and there's genuinely nothing to
+                # install yet.
+                results.append({**item, "status": "check_failed",
+                                 "message": f"Couldn't check {item['source'].title()} just now: {e}",
+                                 "latest": None, "conflicts": [], "retryable": True})
+                continue
             if latest is None:
                 if item["source"] not in ("modrinth", "curseforge"):
                     status = "no_compatible_version"
@@ -1091,7 +1205,7 @@ def api_check_updates():
             conflicts = conflicts_by_project.get(item["project_id"], [])
             results.append({**item, "status": status, "message": message,
                              "latest": latest, "conflicts": conflicts})
-    return jsonify({"results": results, "mc_version": mc_version, "loader": loader})
+    return jsonify({"results": results, "mc_version": mc_version, "loader": loader, "partial": only_keys is not None})
 
 
 @app.route("/api/update_mod", methods=["POST"])
@@ -1113,7 +1227,10 @@ def api_update_mod():
     if block:
         return jsonify({"error": block[0]}), block[1]
 
-    latest = resolve_version(source, project_id, mc_version, loader if content_type in ("mod", "plugin") else "", content_type)
+    try:
+        latest = resolve_version(source, project_id, mc_version, loader if content_type in ("mod", "plugin") else "", content_type)
+    except LookupUnavailable as e:
+        return jsonify({"error": f"Couldn't reach {source.title()} to check for an update: {e}"}), 502
     if not latest:
         return jsonify({"error": "No compatible version found for the current Minecraft version."}), 404
 
@@ -1121,6 +1238,19 @@ def api_update_mod():
     if not item.get("preview"):
         dest_dir = dest_dir_for(server_path, data, content_type)
         old_file = dest_dir / item["file_name"]
+
+        # Download the new file FIRST and only touch the old one once we know
+        # the new one is safely on disk — otherwise a network blip here would
+        # leave the mod deleted with nothing to replace it (see api_install
+        # for the equivalent, already-safe ordering used on first install).
+        try:
+            r = requests.get(latest["download_url"], headers=HEADERS_UA, timeout=60)
+            r.raise_for_status()
+            new_bytes = r.content
+        except requests.RequestException as e:
+            return jsonify({"error": f"Couldn't download the update: {e}. "
+                                      f"Nothing was changed — the current file is untouched."}), 502
+
         if old_file.exists():
             # Backup-before-update: the old jar is copied into .backups/ before
             # it's ever removed, so a bad update is always one click to undo.
@@ -1133,9 +1263,8 @@ def api_update_mod():
                             "version_id": item["version_id"], "version_number": item.get("version_number"),
                             "created": stamp}
             old_file.unlink()
-        r = requests.get(latest["download_url"], headers=HEADERS_UA, timeout=60)
-        r.raise_for_status()
-        (dest_dir / latest["file_name"]).write_bytes(r.content)
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        (dest_dir / latest["file_name"]).write_bytes(new_bytes)
 
     if backup_info:
         item["last_backup"] = backup_info
@@ -1168,14 +1297,24 @@ def api_update_all():
     for bucket in ("mods", "plugins", "datapacks"):
         for item in list(data[bucket]):
             content_type = item["type"]
-            latest = resolve_version(item["source"], item["project_id"], mc_version,
-                                      loader if content_type in ("mod", "plugin") else "", content_type)
+            try:
+                latest = resolve_version(item["source"], item["project_id"], mc_version,
+                                          loader if content_type in ("mod", "plugin") else "", content_type)
+            except LookupUnavailable as e:
+                failed.append({"title": item["title"], "error": f"Couldn't check for an update: {e}"})
+                continue
             if not latest or latest["version_id"] == item["version_id"]:
                 continue
             try:
                 if not item.get("preview"):
                     dest_dir = dest_dir_for(server_path, data, content_type)
                     old_file = dest_dir / item["file_name"]
+                    # Download the replacement FIRST — only touch the old file
+                    # once the new one is confirmed on disk (see api_update_mod
+                    # for the same fix, applied for the same reason).
+                    r = requests.get(latest["download_url"], headers=HEADERS_UA, timeout=60)
+                    r.raise_for_status()
+                    new_bytes = r.content
                     if old_file.exists():
                         backup_dir = backups_dir_for(server_path, data, content_type)
                         backup_dir.mkdir(parents=True, exist_ok=True)
@@ -1186,9 +1325,8 @@ def api_update_all():
                                                 "version_id": item["version_id"],
                                                 "version_number": item.get("version_number"), "created": stamp}
                         old_file.unlink()
-                    r = requests.get(latest["download_url"], headers=HEADERS_UA, timeout=60)
-                    r.raise_for_status()
-                    (dest_dir / latest["file_name"]).write_bytes(r.content)
+                    dest_dir.mkdir(parents=True, exist_ok=True)
+                    (dest_dir / latest["file_name"]).write_bytes(new_bytes)
                 item.update({
                     "version_id": latest["version_id"],
                     "version_number": latest.get("version_number"),
