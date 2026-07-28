@@ -222,6 +222,24 @@ input:focus, select:focus { outline: none; border-color: var(--green); box-shado
 .crafty-howto-list { margin: 0; padding-left: 18px; font-size: 12.5px; color: var(--ink-dim); line-height: 1.7; }
 .crafty-howto-list strong { color: var(--ink); }
 
+/* ---------------- Crafty API-key gate (blocks the app until configured) ---------------- */
+.scaffold.gate-pending { display: none; }
+.crafty-gate {
+  display: none; position: fixed; inset: 0; z-index: 500; background: var(--bg);
+  align-items: center; justify-content: center; padding: 24px; overflow-y: auto;
+}
+.crafty-gate.visible { display: flex; }
+.crafty-gate-card {
+  width: 100%; max-width: 480px; background: var(--bg-card); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 32px; box-shadow: 0 20px 60px rgba(0,0,0,0.4);
+}
+.crafty-gate-card .brand-mark { font-size: 22px; margin-bottom: 10px; display: block; }
+.crafty-gate-card h1 { font-size: 19px; margin: 0 0 10px; color: var(--ink); letter-spacing: -0.01em; }
+.crafty-gate-card .btn-primary { width: 100%; }
+.crafty-gate-divider { display: flex; align-items: center; gap: 10px; margin: 18px 0 12px; color: var(--ink-faint); font-size: 12px; }
+.crafty-gate-divider::before, .crafty-gate-divider::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+#gate-btn-preview { width: 100%; }
+
 .input-with-button { display: flex; gap: 8px; align-items: center; }
 .input-with-button input { flex: 1; }
 .input-with-button .btn-small { margin-top: 6px; white-space: nowrap; flex-shrink: 0; }

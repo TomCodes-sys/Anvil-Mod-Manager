@@ -129,7 +129,11 @@ from elsewhere). Set `PORT=xxxx` as an environment variable if 5151 is already t
 
 ## Using it
 
-1. **Settings tab** — add your Crafty URL + API token (step-by-step instructions right there).
+0. **First run** — the dashboard opens behind a "Connect Crafty Controller" screen and won't let you into the rest
+   of the app until you either save a Crafty URL + API token (step-by-step instructions right there) or click
+   **"Just exploring? Try Preview Mode instead"**, which loads a seeded demo server with no token needed. This gate
+   is skipped automatically when launched via the "Preview Demo" shortcut.
+1. **Settings tab** — add or update your Crafty URL + API token any time (same instructions, step-by-step).
 2. **Server Setup tab** — pick your server by name from the dropdown; version/loader are detected automatically.
 3. **Browse & Install tab** — search and install. Files land straight in `mods/`, `plugins/`, or
    `<world>/datapacks/`, exactly where Crafty expects them. Use the page numbers at the bottom to see more results.

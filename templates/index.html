@@ -9,7 +9,43 @@
 </head>
 <body>
 
-<div class="scaffold">
+<div class="crafty-gate" id="crafty-gate">
+  <div class="crafty-gate-card">
+    <div class="brand-mark" aria-hidden="true">&gt;_</div>
+    <h1>Connect Crafty Controller to continue</h1>
+    <p class="hint" style="margin-top:0">Anvil Mod Manager needs a Crafty Controller API token before it can find your
+      servers or install anything. Enter it below to unlock the dashboard — or just try Preview Mode with a demo
+      server, no token required.</p>
+
+    <div class="crafty-howto">
+      <p class="hint" style="margin:0 0 4px"><strong>Getting your API token:</strong></p>
+      <ol class="crafty-howto-list">
+        <li>Log into Crafty's web UI</li>
+        <li>Click your username (top right) → <strong>Profile</strong></li>
+        <li>Scroll to the <strong>API Keys</strong> section → click <strong>Generate Key</strong></li>
+        <li>Tick <strong>superuser</strong> if you want it to see every server, not just ones shared to that user</li>
+        <li>Copy the token immediately — Crafty only shows it once — and paste it below</li>
+      </ol>
+    </div>
+
+    <label>Crafty URL
+      <div class="input-with-button">
+        <input id="gate-crafty-url" type="text" placeholder="https://192.168.1.50:8443">
+        <button id="gate-btn-detect-crafty-url" class="btn-ghost btn-small" type="button" title="Detect this machine's local IP">Auto-detect</button>
+      </div>
+    </label>
+    <label>API token
+      <input id="gate-crafty-token" type="password" placeholder="paste token here">
+    </label>
+    <button id="gate-btn-save-crafty" class="btn-primary">Save &amp; continue</button>
+    <p class="status-line" id="gate-crafty-status"></p>
+
+    <div class="crafty-gate-divider"><span>or</span></div>
+    <button id="gate-btn-preview" class="btn-ghost" type="button">Just exploring? Try Preview Mode instead</button>
+  </div>
+</div>
+
+<div class="scaffold gate-pending">
   <header class="topbar">
     <div class="brand">
       <span class="brand-mark" aria-hidden="true">&gt;_</span>

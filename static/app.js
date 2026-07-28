@@ -87,6 +87,103 @@ document.getElementById("btn-exit-preview").addEventListener("click", () => {
 });
 loadPreviewMode();
 
+// ---------------- Crafty API-key gate ----------------
+// Blocks the whole app behind a "connect Crafty" screen until either a
+// Crafty URL+token are saved, or the person picks Preview Mode instead.
+// Skipped entirely when launched via the "Preview Demo" shortcut
+// (?autopreview=1) — that shortcut's whole purpose is a no-setup demo.
+function showCraftyGate() {
+  document.getElementById("crafty-gate").classList.add("visible");
+}
+function unlockApp() {
+  document.getElementById("crafty-gate").classList.remove("visible");
+  document.querySelector(".scaffold").classList.remove("gate-pending");
+  // moveTabIndicator() ran on page load while the scaffold was still
+  // display:none (0 offsetWidth/offsetLeft), so recalculate it now that the
+  // layout is actually visible.
+  moveTabIndicator(document.querySelector(".tab.active"));
+}
+async function prefillCraftyGate() {
+  try {
+    const res = await fetch("/api/network/local_ip");
+    const data = await res.json();
+    if (data.ok) document.getElementById("gate-crafty-url").value = data.suggested_url;
+  } catch (e) { /* Auto-detect button still works manually */ }
+}
+async function evaluateCraftyGate() {
+  const params = new URLSearchParams(location.search);
+  if (params.get("autopreview") === "1") {
+    unlockApp();
+    return;
+  }
+  try {
+    const [previewRes, healthRes] = await Promise.all([
+      fetch("/api/settings/preview_mode"),
+      fetch("/api/crafty/health"),
+    ]);
+    const previewData = await previewRes.json();
+    const healthData = await healthRes.json();
+    if (previewData.preview_mode || healthData.configured) {
+      unlockApp();
+    } else {
+      showCraftyGate();
+      prefillCraftyGate();
+    }
+  } catch (e) {
+    // Fail open to the gate, not to an unlocked app, if the status checks
+    // themselves couldn't be reached.
+    showCraftyGate();
+  }
+}
+document.getElementById("gate-btn-detect-crafty-url")?.addEventListener("click", async () => {
+  const btn = document.getElementById("gate-btn-detect-crafty-url");
+  btn.disabled = true;
+  btn.textContent = "Detecting…";
+  try {
+    const res = await fetch("/api/network/local_ip");
+    const data = await res.json();
+    if (data.ok) document.getElementById("gate-crafty-url").value = data.suggested_url;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Auto-detect";
+  }
+});
+document.getElementById("gate-btn-save-crafty").addEventListener("click", async () => {
+  const url = document.getElementById("gate-crafty-url").value.trim();
+  const token = document.getElementById("gate-crafty-token").value.trim();
+  const status = document.getElementById("gate-crafty-status");
+  if (!url || !token) {
+    status.textContent = "Enter both the Crafty URL and API token.";
+    return;
+  }
+  status.textContent = "Checking…";
+  await fetch("/api/settings/crafty", {
+    method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({ url, token }),
+  });
+  const healthRes = await fetch("/api/crafty/health");
+  const healthData = await healthRes.json();
+  // Also reflect the saved URL on the real Settings tab so it isn't blank
+  // the first time the person looks there.
+  const settingsUrlInput = document.getElementById("crafty-url");
+  const settingsTokenInput = document.getElementById("crafty-token");
+  if (settingsUrlInput) settingsUrlInput.value = url;
+  if (settingsTokenInput) settingsTokenInput.placeholder = "(saved — leave blank to keep)";
+  if (healthData.configured) {
+    if (!healthData.reachable) {
+      status.textContent = "Saved — but Crafty isn't reachable at that URL right now. Double-check it later in Settings.";
+    }
+    unlockApp();
+  } else {
+    status.textContent = "Something went wrong saving those — try again.";
+  }
+});
+document.getElementById("gate-btn-preview").addEventListener("click", async () => {
+  unlockApp();
+  await loadDemoServer();
+  document.querySelector('.tab[data-tab="browse"]').click();
+});
+evaluateCraftyGate();
+
 async function loadDemoServer() {
   const res = await fetch("/api/demo/seed", { method: "POST" });
   const data = await res.json();
