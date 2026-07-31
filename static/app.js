@@ -3,7 +3,7 @@
 // from actions that don't have one obvious inline status line nearby (e.g.
 // "Install" on a result card, "Update all"), so failures are never silent
 // and never a blocking alert() popup.
-function toast(message, type = "error", duration = 6000) {
+function toast(message, type = "error", duration = 6000, action = null) {
   const stack = document.getElementById("toast-stack");
   if (!stack) { console.warn("toast:", message); return; }
   const el = document.createElement("div");
@@ -11,6 +11,7 @@ function toast(message, type = "error", duration = 6000) {
   const iconName = type === "error" ? "circle-alert" : type === "success" ? "circle-check" : "info";
   el.innerHTML = `<i data-lucide="${iconName}" class="toast-icon" style="width:16px;height:16px;"></i>
     <div class="toast-body"></div>
+    ${action ? `<button class="toast-action"></button>` : ""}
     <button class="toast-close" aria-label="Dismiss"><i data-lucide="x" style="width:14px;height:14px;"></i></button>`;
   el.querySelector(".toast-body").textContent = message;
   const remove = () => {
@@ -18,6 +19,11 @@ function toast(message, type = "error", duration = 6000) {
     setTimeout(() => el.remove(), 200);
   };
   el.querySelector(".toast-close").addEventListener("click", remove);
+  if (action) {
+    const actionBtn = el.querySelector(".toast-action");
+    actionBtn.textContent = action.label;
+    actionBtn.addEventListener("click", () => { action.onClick(); remove(); });
+  }
   stack.appendChild(el);
   icons();
   if (duration) setTimeout(remove, duration);
@@ -64,7 +70,7 @@ async function loadPreviewMode() {
   const data = await res.json();
   state.previewMode = data.preview_mode;
   document.getElementById("preview-toggle").checked = state.previewMode;
-  document.getElementById("preview-banner").style.display = state.previewMode ? "flex" : "none";
+  await refreshCraftyNagBanner();
 }
 async function setPreviewMode(enabled) {
   const res = await fetch("/api/settings/preview_mode", {
@@ -73,7 +79,7 @@ async function setPreviewMode(enabled) {
   const data = await res.json();
   state.previewMode = data.preview_mode;
   document.getElementById("preview-toggle").checked = state.previewMode;
-  document.getElementById("preview-banner").style.display = state.previewMode ? "flex" : "none";
+  await refreshCraftyNagBanner();
 }
 document.getElementById("preview-toggle").addEventListener("change", (e) => {
   setPreviewMode(e.target.checked);
@@ -84,6 +90,40 @@ document.getElementById("preview-toggle").addEventListener("change", (e) => {
 document.getElementById("btn-exit-preview").addEventListener("click", () => {
   setPreviewMode(false);
   document.getElementById("preview-toggle").checked = false;
+});
+
+// Preview Mode is a persisted setting (unlike a one-off "just let me look
+// around" click), so without this, someone who tried "Preview Mode" once
+// from the Crafty gate would sail past that gate on every future visit too
+// — silently doing everything in simulation with no nudge to ever actually
+// connect their real server. This keeps nagging (banner stays up, worded to
+// say exactly why) for as long as preview mode is on AND no real Crafty URL
+// + token are saved, and clears itself the moment they are.
+async function refreshCraftyNagBanner() {
+  const banner = document.getElementById("preview-banner");
+  const text = document.getElementById("preview-banner-text");
+  const gotoBtn = document.getElementById("btn-goto-crafty-from-banner");
+  if (!state.previewMode) { banner.style.display = "none"; return; }
+
+  let configured = false;
+  try {
+    const res = await fetch("/api/crafty/health");
+    const data = await res.json();
+    configured = !!data.configured;
+  } catch (e) { /* treat as not configured */ }
+
+  banner.style.display = "flex";
+  if (configured) {
+    text.innerHTML = "<strong>Preview mode</strong> — search is live, but installs, updates and removals are simulated. Nothing is written to or deleted from disk.";
+    gotoBtn.style.display = "none";
+  } else {
+    text.innerHTML = "<strong>Preview mode</strong> — and no Crafty Controller is connected yet, so this dashboard can't manage a real server until you add one in Settings.";
+    gotoBtn.style.display = "inline-flex";
+  }
+}
+document.getElementById("btn-goto-crafty-from-banner")?.addEventListener("click", () => {
+  document.querySelector('.tab[data-tab="settings"]').click();
+  document.getElementById("crafty-token")?.focus();
 });
 loadPreviewMode();
 
@@ -384,66 +424,89 @@ async function loadSavedServers() {
   const localRes = await fetch("/api/servers");
   const localServers = await localRes.json();
   await refreshServerStatuses();
-  const row = document.getElementById("saved-servers");
-  row.innerHTML = "";
 
-  // If Crafty is configured, source the list from Crafty directly so every
-  // server Crafty knows about shows up here — not just ones that were
-  // previously walked through the manual detect/save flow. Locally-tracked
-  // servers are merged in for their version/loader info; anything Crafty
-  // knows about that hasn't been imported yet still shows up, just greyed
-  // with an "import" affordance instead of being missing entirely.
+  const hint = document.getElementById("crafty-pick-hint");
+  const notConfigured = document.getElementById("crafty-pick-not-configured");
+  const configured = document.getElementById("crafty-pick-configured");
+  const grid = document.getElementById("crafty-pick-buttons");
+  const status = document.getElementById("crafty-pick-status");
+
+  // Source the list from Crafty directly so every server Crafty knows about
+  // shows up here — not just ones that were previously walked through the
+  // manual detect/save flow. Locally-tracked servers are merged in for their
+  // version/loader info; anything Crafty knows about that hasn't been
+  // imported yet still shows up, just dashed with an "import" affordance
+  // instead of being missing entirely.
   let craftyList = null;
+  let craftyError = null;
   try {
     const res = await fetch("/api/crafty/servers");
     const data = await res.json();
-    if (data.ok) craftyList = data.servers;
-  } catch (e) { /* fall through to local-only below */ }
+    if (data.ok) { craftyList = data.servers; state.craftyServers = data.servers; }
+    else craftyError = data.error;
+  } catch (e) { craftyError = "Couldn't reach Crafty."; }
+
+  if (!craftyList) {
+    notConfigured.style.display = "block";
+    configured.style.display = "none";
+    hint.style.display = "block";
+    hint.textContent = craftyError || "Crafty isn't connected yet.";
+    return;
+  }
+  notConfigured.style.display = "none";
+  configured.style.display = "block";
+  hint.style.display = "none";
 
   const byPath = {};
   localServers.forEach(s => { byPath[s.server_path] = s; });
 
-  const entries = craftyList
-    ? craftyList.map(cs => {
-        const local = cs.existing_path ? byPath[cs.existing_path] : null;
-        return {
-          crafty: cs,
-          local,
-          server_path: local ? local.server_path : null,
-          name: (local && local.name) || cs.name,
-          mc_version: local ? local.mc_version : "",
-          loader: local ? local.loader : "",
-          imported: !!local,
-        };
-      })
-    : localServers.map(s => ({ crafty: null, local: s, server_path: s.server_path, name: s.name, mc_version: s.mc_version, loader: s.loader, imported: true }));
+  const entries = craftyList.map(cs => {
+    const local = cs.existing_path ? byPath[cs.existing_path] : null;
+    return {
+      crafty: cs,
+      local,
+      server_path: local ? local.server_path : null,
+      name: (local && local.name) || cs.name,
+      mc_version: local ? local.mc_version : "",
+      loader: local ? local.loader : "",
+      imported: !!local,
+    };
+  });
+
+  grid.innerHTML = "";
+  if (!entries.length) {
+    status.textContent = "Crafty didn't report any servers yet — create one in Crafty first.";
+  } else {
+    status.textContent = "";
+  }
 
   entries.forEach(e => {
-    const chip = document.createElement("div");
-    chip.className = "server-chip"
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "server-pick-btn"
       + (state.selectedServer && e.server_path && state.selectedServer.server_path === e.server_path ? " active" : "")
-      + (e.imported ? "" : " server-chip-unimported");
-    const name = document.createElement("span");
-    name.className = "server-chip-name";
-    const status = e.imported ? state.serverStatuses[e.server_path] : (e.crafty ? { linked: true, running: e.crafty.running } : null);
+      + (e.imported ? "" : " server-pick-btn-unimported");
+    const nameRow = document.createElement("span");
+    nameRow.className = "server-pick-btn-name";
+    const statusInfo = e.imported ? state.serverStatuses[e.server_path] : (e.crafty ? { linked: true, running: e.crafty.running } : null);
     const dot = document.createElement("span");
-    dot.className = "status-dot " + statusDotClass(status);
-    dot.title = status ? statusLabel(status) : "not imported yet";
-    name.appendChild(dot);
-    name.appendChild(document.createTextNode(e.name || e.server_path || "unnamed"));
+    dot.className = "status-dot " + statusDotClass(statusInfo);
+    dot.title = statusInfo ? statusLabel(statusInfo) : "not imported yet";
+    nameRow.appendChild(dot);
+    nameRow.appendChild(document.createTextNode(e.name || e.server_path || "unnamed"));
     const meta = document.createElement("span");
-    meta.className = "server-chip-meta";
+    meta.className = "server-pick-btn-meta";
     meta.textContent = e.imported
       ? (e.mc_version ? `MC ${e.mc_version} · ${e.loader || "vanilla"}` : "no version set")
       : "click to import from Crafty";
-    chip.appendChild(name);
-    chip.appendChild(meta);
-    chip.addEventListener("click", async () => {
+    btn.appendChild(nameRow);
+    btn.appendChild(meta);
+    btn.addEventListener("click", async () => {
       if (e.imported) {
         applySelectedServer(e.local);
         loadSavedServers();
       } else if (e.crafty) {
-        chip.classList.add("loading");
+        btn.classList.add("loading");
         try {
           const res = await fetch("/api/crafty/select_server", {
             method: "POST", headers: {"Content-Type": "application/json"},
@@ -452,6 +515,16 @@ async function loadSavedServers() {
           const data = await res.json();
           if (data.ok) {
             applySelectedServer(data.server);
+            status.textContent = data.server.mc_version
+              ? mcVersionHint(data.server.mc_version, data.server.mc_version_source, data.server.loader)
+              : `Ready — ${data.server.name}, but the version couldn't be auto-detected. Enter it manually below.`;
+            if (data.server.mc_version_source === "guess") {
+              toast(`Minecraft version for ${data.server.name} is a best guess (${data.server.mc_version}) — please confirm it in Server Setup before installing mods.`, "info", 9000);
+            }
+            if (data.version_changed) {
+              toast(`Detected Minecraft ${data.previous_mc_version} → ${data.server.mc_version} for ${data.server.name} — someone updated the server jar outside this app. Want to check every mod for updates against the new version?`,
+                "info", 12000, { label: "Check updates", onClick: () => { document.querySelector('.tab[data-tab="installed"]')?.click(); runCheckUpdates(); } });
+            }
           } else {
             toast(data.error || "Couldn't import this server.");
           }
@@ -460,7 +533,7 @@ async function loadSavedServers() {
         }
       }
     });
-    row.appendChild(chip);
+    grid.appendChild(btn);
   });
   updateDownloadingToBanner();
 }
@@ -544,97 +617,9 @@ async function restoreActiveServer() {
 }
 restoreActiveServer();
 
-// ---------------- Crafty-first server picker ("Pick your server") ----------------
-// This is the whole Server Setup flow for anyone whose Crafty install follows
-// the Anvil Server Installer's default layout: pick a name from a dropdown of
-// Crafty's own servers, and the folder/version/loader are detected server-side
-// in one round trip — no manual browsing, no separate confirm step.
-
-async function loadCraftyPicker() {
-  const hint = document.getElementById("crafty-pick-hint");
-  const notConfigured = document.getElementById("crafty-pick-not-configured");
-  const configured = document.getElementById("crafty-pick-configured");
-  const select = document.getElementById("crafty-pick-select");
-  const status = document.getElementById("crafty-pick-status");
-
-  try {
-    const res = await fetch("/api/crafty/servers");
-    const data = await res.json();
-
-    if (!data.ok) {
-      notConfigured.style.display = "block";
-      configured.style.display = "none";
-      hint.style.display = "none";
-      return;
-    }
-    notConfigured.style.display = "none";
-    configured.style.display = "block";
-    hint.style.display = "none";
-
-    state.craftyServers = data.servers || [];
-    const current = select.value;
-    select.innerHTML = '<option value="">— choose a server —</option>';
-    state.craftyServers.forEach(cs => {
-      const opt = document.createElement("option");
-      opt.value = cs.id;
-      let label = cs.name + (cs.running === true ? " (running)" : cs.running === false ? " (stopped)" : "");
-      if (cs.already_added) label += " ✓ added";
-      else if (cs.path_exists === false) label += " — folder not found";
-      opt.textContent = label;
-      select.appendChild(opt);
-    });
-    // Re-select whichever server is currently active, if it's one of these.
-    if (state.selectedServer && state.selectedServer.crafty_server_id) {
-      select.value = state.selectedServer.crafty_server_id;
-    } else if (current) {
-      select.value = current;
-    }
-    if (!state.craftyServers.length) {
-      status.textContent = "Crafty didn't report any servers yet — create one in Crafty first.";
-    }
-  } catch (e) {
-    status.textContent = "Couldn't reach Crafty — check the URL/token in Settings.";
-  }
-}
-
-document.getElementById("crafty-pick-select")?.addEventListener("change", async (e) => {
-  const status = document.getElementById("crafty-pick-status");
-  const id = e.target.value;
-  if (!id) { status.textContent = ""; return; }
-  const match = state.craftyServers.find(cs => cs.id === id);
-  status.textContent = "Setting this up…";
-  try {
-    const res = await fetch("/api/crafty/select_server", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ crafty_server_id: id, crafty_server_name: match ? match.name : "" }),
-    });
-    const data = await res.json();
-    if (!data.ok) {
-      status.textContent = data.error || "Couldn't set up that server.";
-      status.classList.add("error");
-      return;
-    }
-    status.classList.remove("error");
-    status.textContent = data.server.mc_version
-      ? mcVersionHint(data.server.mc_version, data.server.mc_version_source, data.server.loader)
-      : `Ready — ${data.server.name}, but the version couldn't be auto-detected. Enter it manually below.`;
-    if (data.server.mc_version_source === "guess") {
-      toast(`Minecraft version for ${data.server.name} is a best guess (${data.server.mc_version}) — please confirm it in Server Setup before installing mods.`, "info", 9000);
-    }
-    applySelectedServer(data.server);
-    await loadSavedServers();
-    await loadCraftyPicker();
-  } catch (e) {
-    status.textContent = "Couldn't reach the server.";
-    status.classList.add("error");
-  }
-});
-
 document.getElementById("btn-goto-crafty-settings")?.addEventListener("click", () => {
   document.querySelector('.tab[data-tab="settings"]').click();
 });
-
-loadCraftyPicker();
 
 // ---------------- Browse & install: content type / source toggles ----------------
 function setSearchType(type) {
@@ -909,20 +894,75 @@ async function installItem(r, btn) {
     return;
   }
   btn.textContent = data.preview ? "Simulated \u2713" : "Installed";
+  if (data.suggested_dependencies && data.suggested_dependencies.length) {
+    promptInstallDependencies(r.title, data.suggested_dependencies);
+  }
+}
+
+// Asks before installing anything extra — never silent. Loops the same
+// /api/install call the person would've made by hand for each required
+// dependency that isn't already on the server.
+function promptInstallDependencies(parentTitle, deps) {
+  const names = deps.map(d => d.title).join(", ");
+  const label = deps.length === 1 ? "Install required dependency" : `Install ${deps.length} required dependencies`;
+  toast(`${parentTitle} needs ${names} to work — install ${deps.length === 1 ? "it" : "them"} too?`, "info", 15000, {
+    label,
+    onClick: async () => {
+      const t = toast(`Installing ${names}…`, "info", 0);
+      const failed = [];
+      for (const dep of deps) {
+        const res = await fetch("/api/install", {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            server_path: state.selectedServer.server_path,
+            source: dep.source, project_id: dep.project_id, title: dep.title, type: "mod",
+          }),
+        });
+        const data = await res.json();
+        if (data.error) failed.push(dep.title);
+        else if (data.suggested_dependencies && data.suggested_dependencies.length) {
+          // Dependencies can have their own dependencies — chain the prompt.
+          promptInstallDependencies(dep.title, data.suggested_dependencies);
+        }
+      }
+      if (t) t.remove();
+      toast(failed.length ? `Installed ${deps.length - failed.length}/${deps.length} — couldn't install: ${failed.join(", ")}`
+                           : `Installed ${names}.`, failed.length ? "error" : "success");
+      if (document.getElementById("panel-installed").classList.contains("active")) refreshInstalled();
+    },
+  });
 }
 
 // ---------------- Installed / updates ----------------
-async function refreshInstalled() {
+// preserveStatuses=true (the default) re-applies whatever /api/check_updates
+// last told us about each item, so refreshing the list after updating (or
+// reverting) ONE item doesn't blank out every other item's "update
+// available" pill and Update button — that was the bug where clicking one
+// item's Update button made every other item's button vanish: this used to
+// always render with no statuses at all, which is indistinguishable from
+// "nothing has an update".
+async function refreshInstalled(preserveStatuses = true) {
   if (!state.selectedServer) return;
   document.getElementById("installed-server-label").textContent = state.selectedServer.name || state.selectedServer.server_path;
   document.getElementById("installed-mc-version").textContent = state.selectedServer.mc_version || "unset";
   document.getElementById("installed-loader").textContent = state.selectedServer.loader || "unset";
   const res = await fetch(`/api/installed?server_path=${encodeURIComponent(state.selectedServer.server_path)}`);
   const data = await res.json();
-  renderInstalledList("installed-mods", data.mods);
-  renderInstalledList("installed-plugins", data.plugins || []);
-  renderInstalledList("installed-datapacks", data.datapacks);
-  document.getElementById("btn-update-all").style.display = "none";
+  const statuses = (preserveStatuses && state.lastCheckedResults && state.lastCheckedResults.length)
+    ? state.lastCheckedResults : null;
+  renderInstalledList("installed-mods", data.mods, statuses);
+  renderInstalledList("installed-plugins", data.plugins || [], statuses);
+  renderInstalledList("installed-datapacks", data.datapacks, statuses);
+  if (statuses) {
+    // Recompute from the preserved statuses, filtered to what's still
+    // actually installed, rather than blindly hiding the button.
+    const installedKeys = new Set([...data.mods, ...(data.plugins || []), ...data.datapacks]
+      .map(i => `${i.source}:${i.project_id}`));
+    const remainingUpdates = statuses.filter(r => r.status === "update_available" && installedKeys.has(`${r.source}:${r.project_id}`)).length;
+    document.getElementById("btn-update-all").style.display = remainingUpdates > 0 ? "inline-flex" : "none";
+  } else {
+    document.getElementById("btn-update-all").style.display = "none";
+  }
   icons();
 }
 
@@ -1123,7 +1163,11 @@ async function applyUpdate(item, btn) {
     setTimeout(() => { btn.textContent = "Update"; }, 2200);
     return;
   }
-  refreshInstalled();
+  await refreshInstalled();
+  // Re-check just this one item so its own pill/button reflects reality
+  // (it's no longer "update available") without re-hitting Modrinth/
+  // CurseForge for everything else that hasn't changed.
+  await runCheckUpdates([{ source: item.source, project_id: item.project_id }]);
 }
 
 async function revertItem(item, btn) {
@@ -1135,7 +1179,8 @@ async function revertItem(item, btn) {
   });
   const data = await res.json();
   if (data.error) { btn.textContent = "Failed"; btn.title = data.error; return; }
-  refreshInstalled();
+  await refreshInstalled();
+  await runCheckUpdates([{ source: item.source, project_id: item.project_id }]);
 }
 
 // ---------------- Changelog preview modal ----------------
@@ -1254,7 +1299,7 @@ document.getElementById("btn-save-crafty").addEventListener("click", async () =>
   document.getElementById("crafty-settings-status").textContent = "Saved.";
   document.getElementById("crafty-token").value = "";
   loadSavedServers();
-  loadCraftyPicker();
+  refreshCraftyNagBanner();
 });
 
 document.getElementById("btn-detect-crafty-url")?.addEventListener("click", async () => {
@@ -1331,6 +1376,38 @@ icons();
 // Keep the running/stopped badges and the install gate fresh even if the
 // person starts/stops the server in Crafty while this dashboard stays open.
 setInterval(() => { loadSavedServers(); }, 20000);
+
+// ---------------- Proactive version-drift check ----------------
+// Previously, "the server jar got updated outside this app" was only ever
+// caught when someone re-clicked the server in the picker. This polls the
+// currently active server in the background so it gets caught either way.
+// notifiedDrifts tracks which (path, version) pairs we've already toasted
+// about this page load, so a dismissed toast doesn't reappear every poll.
+const notifiedDrifts = new Set();
+async function checkVersionDrift() {
+  const server = state.selectedServer;
+  if (!server || !server.server_path || server.server_path.startsWith("demo://")) return;
+  try {
+    const res = await fetch(`/api/server/version_drift?path=${encodeURIComponent(server.server_path)}`);
+    const data = await res.json();
+    if (!data.version_changed) return;
+    const key = `${server.server_path}:${data.previous_mc_version}->${data.current_mc_version}`;
+    if (notifiedDrifts.has(key)) return;
+    notifiedDrifts.add(key);
+
+    // The endpoint already corrected the stored version server-side —
+    // mirror that locally so the UI (and a follow-up "check updates"
+    // click) isn't comparing against the now-stale value in memory.
+    if (state.selectedServer && state.selectedServer.server_path === server.server_path) {
+      state.selectedServer.mc_version = data.current_mc_version;
+      applySelectedServer(state.selectedServer);
+    }
+    toast(`Detected Minecraft ${data.previous_mc_version} → ${data.current_mc_version} for ${server.name} — someone updated the server jar outside this app. Want to check every mod for updates against the new version?`,
+      "info", 15000, { label: "Check updates", onClick: () => { document.querySelector('.tab[data-tab="installed"]')?.click(); runCheckUpdates(); } });
+    loadSavedServers();
+  } catch (e) { /* transient — next poll will retry */ }
+}
+setInterval(checkVersionDrift, 60000);
 
 // ---------------- Topbar Crafty health dot ----------------
 async function loadCraftyHealth() {

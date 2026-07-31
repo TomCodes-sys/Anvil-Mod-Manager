@@ -186,17 +186,23 @@ _VERSION_RE = re.compile(r"\b(1\.\d{1,2}(?:\.\d{1,2})?)\b")
 
 def detect_mc_version(server_path: Path):
     """Returns (version, source). source is one of:
-      "jar"     — read straight out of an embedded version.json (highest confidence;
-                  covers vanilla, Paper, Purpur, Spigot, Bukkit, Folia, and Fabric/Quilt
-                  setups that keep the plain vanilla server.jar alongside the loader jar)
-      "forge"   — read from Forge/NeoForge's own libraries/net/minecraft/server/<version>
-                  folder, which their installers always create — this is what makes
-                  Forge/NeoForge detection work at all, since their launch jar doesn't
-                  embed version.json itself
-      "guess"   — a version-shaped number pulled out of a jar filename (e.g.
-                  forge-1.20.1-47.2.20-installer.jar); lowest confidence of the three,
-                  flagged as such so the UI can tell the person to double-check it
-      ""        — nothing found; falls back to whatever's already saved, or blank
+      "jar"            — read straight out of an embedded version.json (highest
+                         confidence; covers vanilla, Paper, Purpur, Spigot, Bukkit,
+                         Folia, and Fabric/Quilt setups that keep the plain vanilla
+                         server.jar alongside the loader jar)
+      "forge"          — read from Forge/NeoForge's own libraries/net/minecraft/server
+                         folder, which their installers always create — this is what
+                         makes Forge/NeoForge detection work at all, since their
+                         launch jar doesn't embed version.json itself
+      "versions_folder" — read from a versions/<mc_version>/ folder, which Crafty
+                         itself creates (one per version it's ever downloaded for
+                         this server) — same confidence tier as "forge" above, since
+                         it's a folder name Crafty controls rather than a filename
+      "guess"          — a version-shaped number pulled out of a jar filename (e.g.
+                         forge-1.20.1-47.2.20-installer.jar); lowest confidence of the
+                         four, flagged as such so the UI can tell the person to
+                         double-check it
+      ""               — nothing found; falls back to whatever's already saved, or blank
     """
     # 1) Embedded version.json — the reliable case.
     for jar in server_path.glob("*.jar"):
@@ -221,7 +227,20 @@ def detect_mc_version(server_path: Path):
             candidates.sort(key=lambda v: [int(x) for x in v.split(".")], reverse=True)
             return candidates[0], "forge"
 
-    # 3) Last resort: a version-shaped number in a jar filename in the root
+    # 3) Crafty's own "versions" folder: Crafty caches the server jar it
+    #    downloaded under versions/<mc_version>/ (one subfolder per version
+    #    it's ever installed for this server), named exactly after the MC
+    #    version — same confidence tier as the Forge/NeoForge check above,
+    #    since it's a folder name Crafty itself controls rather than
+    #    anything parsed out of a jar's filename.
+    versions_dir = server_path / "versions"
+    if versions_dir.is_dir():
+        candidates = [d.name for d in versions_dir.iterdir() if d.is_dir() and _VERSION_RE.fullmatch(d.name)]
+        if candidates:
+            candidates.sort(key=lambda v: [int(x) for x in v.split(".")], reverse=True)
+            return candidates[0], "versions_folder"
+
+    # 4) Last resort: a version-shaped number in a jar filename in the root
     #    (e.g. "forge-1.20.1-47.2.20-installer.jar", "paper-1.20.1-196.jar"). Loosely
     #    confident at best — flagged to the caller as "guess" so the UI can show it
     #    as unverified rather than presenting it with the same confidence as the two
@@ -234,6 +253,17 @@ def detect_mc_version(server_path: Path):
     return "", ""
 
 
+# Bedrock Edition servers Crafty manages always ship this file (it's part of
+# the official bedrock_server download) — Java-only tooling like this app has
+# no business showing them in server pickers, since there's no such thing as
+# a Modrinth/CurseForge mod for a Bedrock world.
+BEDROCK_MARKER_FILE = "bedrock_server_how_to.html"
+
+
+def is_bedrock_world(server_path) -> bool:
+    return (Path(server_path) / BEDROCK_MARKER_FILE).exists()
+
+
 def detect_world_name(server_path: Path):
     props = server_path / "server.properties"
     if props.exists():
@@ -244,19 +274,64 @@ def detect_world_name(server_path: Path):
     return "world"
 
 
+@app.route("/api/server/version_drift")
+def api_version_drift():
+    """Cheap, read-only check for the periodic poll on the frontend: has the
+    on-disk MC version moved since we last saved it, for the currently active
+    server? Unlike /api/server/detect, this is meant to be called every so
+    often in the background without the person doing anything — so it skips
+    loader/world detection and only does the one filesystem scan that's
+    actually needed to answer "did the version change." Previously,
+    version-change detection only ever ran when someone re-clicked the
+    server picker — if the jar got swapped out in the background and nobody
+    touched the picker again, it went unnoticed indefinitely."""
+    path = request.args.get("path", "")
+    p = Path(path)
+    if not path or not p.exists() or is_bedrock_world(p):
+        return jsonify({"version_changed": False})
+    mc_version, source = detect_mc_version(p)
+    data = load_server_data(path)
+    previous_version = data.get("mc_version")
+    version_changed = bool(previous_version and mc_version and previous_version != mc_version)
+    if version_changed:
+        # Detection is authoritative (it reflects the actual jar/versions
+        # folder on disk), so correct the stored value now rather than just
+        # reporting the drift and leaving the old one in place — otherwise a
+        # "check updates" click straight after this toast would still
+        # compare mods against the stale version.
+        data["mc_version"] = mc_version
+        data["mc_version_source"] = source
+        save_server_data(path, data)
+    return jsonify({
+        "version_changed": version_changed,
+        "previous_mc_version": previous_version if version_changed else None,
+        "current_mc_version": mc_version if version_changed else None,
+    })
+
+
 @app.route("/api/server/detect")
 def api_detect():
     path = request.args.get("path", "")
     p = Path(path)
     if not p.exists():
         return jsonify({"error": "Path not found"}), 400
+    if is_bedrock_world(p):
+        return jsonify({"error": "This looks like a Bedrock Edition world (found "
+                                  f"{BEDROCK_MARKER_FILE}) — Bedrock doesn't support Modrinth/CurseForge "
+                                  "mods, so there's nothing for this app to manage here."}), 400
     mc_version, mc_version_source = detect_mc_version(p)
+    previous = load_server_data(path)
+    version_changed = bool(
+        previous.get("mc_version") and mc_version and previous["mc_version"] != mc_version
+    )
     return jsonify({
         "mc_version": mc_version,
         "mc_version_source": mc_version_source,
         "loader": detect_loader(p),
         "world_name": detect_world_name(p),
         "has_mods_folder": (p / "mods").exists(),
+        "version_changed": version_changed,
+        "previous_mc_version": previous.get("mc_version") if version_changed else None,
     })
 
 
@@ -508,6 +583,11 @@ def crafty_servers():
         except (requests.RequestException, ValueError):
             pass
         guessed_path = str(Path(root) / sid)
+        if Path(guessed_path).is_dir() and is_bedrock_world(guessed_path):
+            # Bedrock worlds have no mods/plugins/datapacks to manage here —
+            # leaving them out of the picker avoids someone importing one and
+            # hitting "no compatible version" for everything they search for.
+            continue
         out.append({
             "id": sid,
             "name": s.get("server_name") or sid,
@@ -565,8 +645,14 @@ def crafty_select_server():
             "guessed_path": guessed_path,
         }), 400
 
+    if is_bedrock_world(p):
+        return jsonify({"ok": False, "error": "This is a Bedrock Edition server — there's nothing for this app "
+                                               "to manage (no Modrinth/CurseForge mods exist for Bedrock)."}), 400
+
     data = load_server_data(guessed_path)
+    previous_version = data.get("mc_version")
     detected_version, detected_source = detect_mc_version(p)
+    version_changed = bool(previous_version and detected_version and previous_version != detected_version)
     data.update({
         "server_path": guessed_path,
         "name": crafty_name or data.get("name") or p.name,
@@ -582,7 +668,12 @@ def crafty_select_server():
     settings["servers"][server_key(guessed_path)] = {"path": guessed_path, "name": data["name"]}
     settings["active_server"] = guessed_path
     save_settings(settings)
-    return jsonify({"ok": True, "server": data})
+    return jsonify({
+        "ok": True,
+        "server": data,
+        "version_changed": version_changed,
+        "previous_mc_version": previous_version if version_changed else None,
+    })
 
 
 
@@ -934,6 +1025,7 @@ def modrinth_best_version(project_id, mc_version, loader, content_type):
         "version_number": v.get("version_number"),
         "file_name": primary_file["filename"],
         "download_url": primary_file["url"],
+        "raw_dependencies": v.get("dependencies", []),
     }
 
 
@@ -1036,8 +1128,9 @@ def curseforge_changelog(project_id, file_id):
 
 def curseforge_file_dependencies(project_id, file_id):
     """Returns the list of {modId, relationType} for a CurseForge file.
-    relationType 5 == Incompatible. Modrinth has no equivalent public field,
-    so incompatibility warnings only ever apply to CurseForge-sourced mods."""
+    relationType 5 == Incompatible, 3 == RequiredDependency. Modrinth has no
+    equivalent public field for incompatibility, so incompatibility warnings
+    only ever apply to CurseForge-sourced mods."""
     settings = load_settings()
     key = settings.get("curseforge_api_key")
     if not key:
@@ -1050,6 +1143,44 @@ def curseforge_file_dependencies(project_id, file_id):
         return r.json().get("data", {}).get("dependencies", []) or []
     except requests.RequestException:
         return []
+
+
+def required_dependency_project_ids(source, project_id, version):
+    """Given the version dict resolve_version() returned (plus the project_id
+    of the mod being installed, needed for the CurseForge lookup), pull out
+    the project ids of REQUIRED dependencies only (never optional/embedded/
+    incompatible ones) — this is what /api/install offers to install
+    alongside the mod itself, since a mod that needs a library mod to
+    function is useless without it."""
+    if source == "modrinth":
+        deps = version.get("raw_dependencies") or []
+        return list({d["project_id"] for d in deps
+                     if d.get("dependency_type") == "required" and d.get("project_id")})
+    elif source == "curseforge":
+        deps = curseforge_file_dependencies(project_id, version["version_id"])
+        return list({str(d["modId"]) for d in deps if d.get("relationType") == 3 and d.get("modId")})
+    return []
+
+
+def project_title(source, project_id):
+    """Best-effort human-readable name for a dependency project — falls back
+    to the raw id if the lookup fails, since this is just for a confirmation
+    prompt, not anything load-bearing."""
+    try:
+        if source == "modrinth":
+            r = requests.get(f"{MODRINTH_API}/project/{project_id}", headers=HEADERS_UA, timeout=10)
+            if r.status_code == 200:
+                return r.json().get("title", project_id)
+        elif source == "curseforge":
+            settings = load_settings()
+            key = settings.get("curseforge_api_key")
+            if key:
+                r = requests.get(f"{CURSEFORGE_API}/mods/{project_id}", headers={"x-api-key": key, **HEADERS_UA}, timeout=10)
+                if r.status_code == 200:
+                    return r.json().get("data", {}).get("name", project_id)
+    except requests.RequestException:
+        pass
+    return project_id
 
 
 @app.route("/api/changelog")
@@ -1124,7 +1255,23 @@ def api_install():
     data[bucket] = [m for m in data[bucket] if m["project_id"] != project_id or m["source"] != source]
     data[bucket].append(entry)
     save_server_data(server_path, data)
-    return jsonify({"ok": True, "installed": entry, "preview": preview})
+
+    # Dependencies: only offered for mods/plugins (datapacks don't have them),
+    # only the REQUIRED ones, and only ones not already installed — never
+    # installed automatically, just handed back so the person can say yes.
+    suggested_dependencies = []
+    if content_type in ("mod", "plugin"):
+        already_installed = {(m["source"], m["project_id"]) for m in data["mods"] + data.get("plugins", [])}
+        dep_ids = required_dependency_project_ids(source, project_id, version)
+        for dep_id in dep_ids:
+            if (source, dep_id) in already_installed:
+                continue
+            suggested_dependencies.append({
+                "source": source, "project_id": dep_id, "title": project_title(source, dep_id),
+            })
+
+    return jsonify({"ok": True, "installed": entry, "preview": preview,
+                     "suggested_dependencies": suggested_dependencies})
 
 
 @app.route("/api/installed")

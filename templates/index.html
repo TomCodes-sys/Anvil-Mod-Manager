@@ -69,7 +69,8 @@
 
   <div class="preview-banner" id="preview-banner" style="display:none">
     <span class="preview-dot"></span>
-    <span><strong>Preview mode</strong> — search is live, but installs, updates and removals are simulated. Nothing is written to or deleted from disk.</span>
+    <span id="preview-banner-text"><strong>Preview mode</strong> — search is live, but installs, updates and removals are simulated. Nothing is written to or deleted from disk.</span>
+    <button id="btn-goto-crafty-from-banner" class="btn-secondary" style="display:none">Connect Crafty now</button>
     <button id="btn-exit-preview" class="btn-ghost">Turn off</button>
   </div>
 
@@ -107,11 +108,8 @@
         </div>
 
         <div id="crafty-pick-configured" style="display:none">
-          <label>Server (from Crafty)
-            <select id="crafty-pick-select">
-              <option value="">— choose a server —</option>
-            </select>
-          </label>
+          <p class="hint" style="margin-top:0">Every server Crafty knows about shows up as a button below — click one to switch to it (imports it automatically first time). The colored dot shows whether it's currently running in Crafty.</p>
+          <div class="server-button-grid" id="crafty-pick-buttons"></div>
           <p class="status-line" id="crafty-pick-status"></p>
         </div>
       </div>
@@ -165,23 +163,19 @@
             </label>
             <button id="btn-save-config" class="btn-primary">Save server profile</button>
             <p class="status-line" id="setup-status"></p>
+
+            <label style="margin-top:14px">Link to a Crafty server (optional, for live running-status)
+              <select id="crafty-link-select"><option value="">— not linked —</option></select>
+            </label>
+            <div class="crafty-link-row">
+              <button id="btn-auto-detect-crafty" class="btn-secondary btn-small">Auto-detect all</button>
+              <span class="crafty-link-hint" id="crafty-link-hint"></span>
+            </div>
           </div>
         </div>
       </details>
-
-      <div class="card" id="saved-servers-card">
-        <h2>Saved servers</h2>
-        <p class="hint" style="margin-top:-6px">Every server Crafty knows about shows up here (once Crafty's connected in Settings) — dashed chips haven't been imported yet, click one to pull it in automatically. The server you last worked on is auto-selected next time you open the dashboard. The colored dot shows whether it's currently running in Crafty.</p>
-        <div class="server-chip-row" id="saved-servers"></div>
-
-        <div class="crafty-link-row">
-          <label for="crafty-link-select" style="margin:0; font-size:12.5px; color:var(--ink-dim);">Linked Crafty server:</label>
-          <select id="crafty-link-select"><option value="">— not linked —</option></select>
-          <button id="btn-auto-detect-crafty" class="btn-secondary btn-small">Auto-detect all</button>
-          <span class="crafty-link-hint" id="crafty-link-hint"></span>
-        </div>
-      </div>
     </section>
+
 
     <!-- BROWSE & INSTALL -->
     <section class="panel" id="panel-browse">

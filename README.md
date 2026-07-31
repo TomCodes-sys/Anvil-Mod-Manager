@@ -163,3 +163,14 @@ through the dashboard instead so update-checking (and backups) can find it later
   anything else installed gets listed in a text note inside the exported pack instead of being silently dropped.
 - This tool doesn't restart or manage the server process itself beyond the optional Crafty API restart hook — make
   sure the Crafty URL/token/server ID in Settings are correct if you want that button to work.
+
+## Testing
+
+`tests/` has a pytest suite for the pure detection logic (loader/version/Bedrock detection, dependency filtering) —
+the exact kind of function where a past bug (NeoForge misidentified as Forge) actually happened. Nothing here needs
+a real Crafty instance or network access.
+
+```bash
+pip install pytest
+pytest
+```
